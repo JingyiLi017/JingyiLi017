@@ -1,0 +1,61 @@
+{
+  "name": "writer-book-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AI writing engine + book analysis system desktop app",
+  "main": "dist-electron/main.js",
+  "author": "local",
+  "scripts": {
+    "dev": "concurrently \"tsc -p tsconfig.electron.json --watch\" \"vite\" \"wait-on tcp:5173 file:dist-electron/main.js && electron .\"",
+    "build:web": "vite build",
+    "build:electron": "tsc -p tsconfig.electron.json",
+    "build:sidecar": "powershell -ExecutionPolicy Bypass -File scripts/build_sidecar.ps1",
+    "build": "npm run build:web && npm run build:electron",
+    "dist": "powershell -ExecutionPolicy Bypass -File scripts/dist_win.ps1",
+    "dist:dir": "powershell -ExecutionPolicy Bypass -File scripts/dist_win.ps1 -Dir",
+    "dist:no-package": "powershell -ExecutionPolicy Bypass -File scripts/dist_win.ps1 -NoPackage",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.electron.json --noEmit"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.2",
+    "electron": "^35.0.2",
+    "electron-builder": "^25.1.8",
+    "typescript": "^5.7.3",
+    "vite": "^6.2.1",
+    "wait-on": "^8.0.2"
+  },
+  "build": {
+    "appId": "com.local.writerbookdesktop",
+    "productName": "WriterBook Desktop",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**",
+      "dist-electron/**",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "engine/dist/sidecar",
+        "to": "sidecar",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    }
+  }
+}

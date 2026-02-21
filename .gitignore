@@ -1,0 +1,17 @@
+node_modules
+/dist
+/dist-electron
+/release
+engine/.venv
+engine/build
+engine/dist/sidecar
+engine/sidecar.spec
+__pycache__
+*.pyc
+.DS_Store
+.vscode/
+.tmp*
+*.log
+workspace_test/
+mvp_diagnose/
+tmp_events.sql
