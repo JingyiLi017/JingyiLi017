@@ -1,5 +1,6 @@
 import { ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import fs from "node:fs";
+import fsp from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
 import { AgentDesktopSettings, setSettings } from "./store/settingsStore";
@@ -293,6 +294,27 @@ export class SidecarManager {
       this.log(`[infra] database reachable at ${hp.host}:${hp.port}`);
       return;
     }
+    const provider = String(cfg.infraProvider || "docker");
+    if (provider === "none") {
+      throw new Error("INFRA_DISABLED_DB_NOT_REACHABLE");
+    }
+    if (provider === "local_pg") {
+      await this.startLocalPostgres(cfg, hp.port);
+    } else {
+      await this.startDockerPostgres(cfg);
+    }
+    for (let i = 0; i < 50; i++) {
+      const ok = await this.isTcpReachable(hp.host, hp.port, 1200);
+      if (ok) {
+        this.log(`[infra] database ready at ${hp.host}:${hp.port}`);
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 600));
+    }
+    throw new Error("INFRA_DB_TIMEOUT");
+  }
+
+  private async startDockerPostgres(cfg: AgentDesktopSettings): Promise<void> {
     const composeFile = String(cfg.infraComposePath || "").trim();
     if (!composeFile || !fs.existsSync(composeFile)) {
       throw new Error(`INFRA_COMPOSE_NOT_FOUND:${composeFile || "(empty)"}`);
@@ -306,14 +328,58 @@ export class SidecarManager {
     if (!out.ok) {
       throw new Error("INFRA_DOCKER_START_FAILED");
     }
-    for (let i = 0; i < 50; i++) {
-      const ok = await this.isTcpReachable(hp.host, hp.port, 1200);
-      if (ok) {
-        this.log(`[infra] database ready at ${hp.host}:${hp.port}`);
-        return;
-      }
-      await new Promise((r) => setTimeout(r, 600));
+  }
+
+  private guessInitDbPathFromPgCtl(pgCtlPath: string): string {
+    if (!pgCtlPath) return "";
+    const dir = path.dirname(pgCtlPath);
+    return path.join(dir, process.platform === "win32" ? "initdb.exe" : "initdb");
+  }
+
+  private guessPgCtlPathFromInitDb(initdbPath: string): string {
+    if (!initdbPath) return "";
+    const dir = path.dirname(initdbPath);
+    return path.join(dir, process.platform === "win32" ? "pg_ctl.exe" : "pg_ctl");
+  }
+
+  private async startLocalPostgres(cfg: AgentDesktopSettings, port: number): Promise<void> {
+    const pgCtl = String(cfg.localPgCtlPath || "").trim() || this.guessPgCtlPathFromInitDb(String(cfg.localPgInitDbPath || "").trim());
+    const initdb = String(cfg.localPgInitDbPath || "").trim() || this.guessInitDbPathFromPgCtl(pgCtl);
+    const dataDir = String(cfg.localPgDataDir || "").trim();
+    if (!pgCtl || !fs.existsSync(pgCtl)) {
+      throw new Error(`LOCAL_PG_CTL_NOT_FOUND:${pgCtl || "(empty)"}`);
     }
-    throw new Error("INFRA_DB_TIMEOUT");
+    if (!dataDir) {
+      throw new Error("LOCAL_PG_DATA_DIR_EMPTY");
+    }
+    await fsp.mkdir(dataDir, { recursive: true });
+    const pgVersionFile = path.join(dataDir, "PG_VERSION");
+    if (!fs.existsSync(pgVersionFile)) {
+      if (!initdb || !fs.existsSync(initdb)) {
+        throw new Error(`LOCAL_INITDB_NOT_FOUND:${initdb || "(empty)"}`);
+      }
+      this.log(`[infra] local_pg initdb: ${dataDir}`);
+      const initRes = await this.runCmd(initdb, ["-D", dataDir, "-U", "postgres", "-A", "trust", "-E", "UTF8"]);
+      if (!initRes.ok) {
+        throw new Error("LOCAL_INITDB_FAILED");
+      }
+    }
+    const logFile = path.join(dataDir, "postgres.log");
+    this.log(`[infra] local_pg pg_ctl start: ${dataDir} port=${port}`);
+    const out = await this.runCmd(pgCtl, [
+      "-D",
+      dataDir,
+      "-l",
+      logFile,
+      "-o",
+      `-p ${port}`,
+      "start",
+      "-w",
+      "-t",
+      "30",
+    ]);
+    if (!out.ok) {
+      throw new Error("LOCAL_PG_START_FAILED");
+    }
   }
 }

@@ -1058,11 +1058,50 @@ export function AgentConsolePanel(props: Props) {
           />
         </label>
         <label>
+          infra_provider
+          <select
+            value={String(settings?.infraProvider || "docker")}
+            onChange={(e) => {
+              const v = e.target.value;
+              setSettings({ ...(settings || {}), infraProvider: v });
+              void saveSettings({ infraProvider: v });
+            }}
+          >
+            <option value="docker">docker</option>
+            <option value="local_pg">local_pg</option>
+            <option value="none">none</option>
+          </select>
+        </label>
+        <label>
           infra_compose
           <input
             value={String(settings?.infraComposePath || "")}
             onChange={(e) => setSettings({ ...(settings || {}), infraComposePath: e.target.value })}
             onBlur={() => void saveSettings({ infraComposePath: String(settings?.infraComposePath || "") })}
+          />
+        </label>
+        <label>
+          local_pg_ctl
+          <input
+            value={String(settings?.localPgCtlPath || "")}
+            onChange={(e) => setSettings({ ...(settings || {}), localPgCtlPath: e.target.value })}
+            onBlur={() => void saveSettings({ localPgCtlPath: String(settings?.localPgCtlPath || "") })}
+          />
+        </label>
+        <label>
+          local_initdb
+          <input
+            value={String(settings?.localPgInitDbPath || "")}
+            onChange={(e) => setSettings({ ...(settings || {}), localPgInitDbPath: e.target.value })}
+            onBlur={() => void saveSettings({ localPgInitDbPath: String(settings?.localPgInitDbPath || "") })}
+          />
+        </label>
+        <label>
+          local_pg_data
+          <input
+            value={String(settings?.localPgDataDir || "")}
+            onChange={(e) => setSettings({ ...(settings || {}), localPgDataDir: e.target.value })}
+            onBlur={() => void saveSettings({ localPgDataDir: String(settings?.localPgDataDir || "") })}
           />
         </label>
         <label>
