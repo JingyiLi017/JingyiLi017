@@ -50,6 +50,13 @@
         "filter": [
           "**/*"
         ]
+      },
+      {
+        "from": "infra",
+        "to": "infra",
+        "filter": [
+          "**/*"
+        ]
       }
     ],
     "win": {

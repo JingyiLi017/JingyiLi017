@@ -24,6 +24,7 @@ export class SidecarManager {
     if (this.proc) {
       return { ok: true, baseUrl: this.baseUrl, port: this.port };
     }
+    await this.ensureInfraReady(cfg);
     const preferred = Number(cfg.sidecarPreferredPort || 17777);
     this.port = await this.pickPort(preferred);
     this.baseUrl = `http://127.0.0.1:${this.port}`;
@@ -76,6 +77,7 @@ export class SidecarManager {
     const env: Record<string, string | undefined> = {
       ...process.env,
       PORT: String(this.port),
+      DATABASE_URL: String(cfg.databaseUrl || "").trim() || undefined,
     };
     if (String(cfg.agentToken || "").trim()) env["AGENT_TOKEN"] = String(cfg.agentToken || "");
     this.log(`[sidecar] spawn ${exePath} --host 127.0.0.1 --port ${this.port} (cwd=${cwd})`);
@@ -93,6 +95,7 @@ export class SidecarManager {
     const env: Record<string, string | undefined> = {
       ...process.env,
       PORT: String(this.port),
+      DATABASE_URL: String(cfg.databaseUrl || "").trim() || undefined,
     };
     if (String(cfg.agentToken || "").trim()) env["AGENT_TOKEN"] = String(cfg.agentToken || "");
     this.log(`[sidecar] spawn ${pythonPath} -m uvicorn app.main:app --host 127.0.0.1 --port ${this.port} (cwd=${cwd})`);
@@ -227,5 +230,90 @@ export class SidecarManager {
       }
       throw new Error("NO_FREE_PORT");
     })();
+  }
+
+  private parseDbHostPort(databaseUrl: string): { host: string; port: number } | null {
+    const raw = String(databaseUrl || "").trim();
+    if (!raw) return null;
+    let normalized = raw;
+    if (normalized.startsWith("postgresql+")) normalized = normalized.replace("postgresql+", "postgresql");
+    if (normalized.startsWith("postgres+")) normalized = normalized.replace("postgres+", "postgresql+");
+    try {
+      const u = new URL(normalized);
+      const host = String(u.hostname || "").trim();
+      const port = Number(u.port || "5432");
+      if (!host || !Number.isFinite(port)) return null;
+      return { host, port };
+    } catch {
+      return null;
+    }
+  }
+
+  private isLocalHost(host: string): boolean {
+    const h = String(host || "").trim().toLowerCase();
+    return h === "127.0.0.1" || h === "localhost";
+  }
+
+  private async isTcpReachable(host: string, port: number, timeoutMs = 800): Promise<boolean> {
+    return await new Promise<boolean>((resolve) => {
+      const socket = new net.Socket();
+      let done = false;
+      const finish = (ok: boolean) => {
+        if (done) return;
+        done = true;
+        try {
+          socket.destroy();
+        } catch {}
+        resolve(ok);
+      };
+      socket.setTimeout(timeoutMs);
+      socket.once("connect", () => finish(true));
+      socket.once("timeout", () => finish(false));
+      socket.once("error", () => finish(false));
+      socket.connect(port, host);
+    });
+  }
+
+  private async runCmd(cmd: string, args: string[], cwd?: string): Promise<{ ok: boolean; code: number }> {
+    return await new Promise((resolve) => {
+      const p = spawn(cmd, args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
+      p.stdout.on("data", (d) => this.log(`[infra:${cmd}:stdout] ${String(d).trimEnd()}`));
+      p.stderr.on("data", (d) => this.log(`[infra:${cmd}:stderr] ${String(d).trimEnd()}`));
+      p.once("error", () => resolve({ ok: false, code: -1 }));
+      p.once("close", (code) => resolve({ ok: code === 0, code: Number(code ?? -1) }));
+    });
+  }
+
+  private async ensureInfraReady(cfg: AgentDesktopSettings): Promise<void> {
+    if (cfg.autoStartInfra === false) return;
+    const hp = this.parseDbHostPort(String(cfg.databaseUrl || ""));
+    if (!hp || !this.isLocalHost(hp.host)) return;
+    const ready = await this.isTcpReachable(hp.host, hp.port);
+    if (ready) {
+      this.log(`[infra] database reachable at ${hp.host}:${hp.port}`);
+      return;
+    }
+    const composeFile = String(cfg.infraComposePath || "").trim();
+    if (!composeFile || !fs.existsSync(composeFile)) {
+      throw new Error(`INFRA_COMPOSE_NOT_FOUND:${composeFile || "(empty)"}`);
+    }
+    this.log(`[infra] database not reachable, attempting docker compose up: ${composeFile}`);
+    const composeDir = path.dirname(composeFile);
+    let out = await this.runCmd("docker", ["compose", "-f", composeFile, "up", "-d", "postgres"], composeDir);
+    if (!out.ok) {
+      out = await this.runCmd("docker-compose", ["-f", composeFile, "up", "-d", "postgres"], composeDir);
+    }
+    if (!out.ok) {
+      throw new Error("INFRA_DOCKER_START_FAILED");
+    }
+    for (let i = 0; i < 50; i++) {
+      const ok = await this.isTcpReachable(hp.host, hp.port, 1200);
+      if (ok) {
+        this.log(`[infra] database ready at ${hp.host}:${hp.port}`);
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 600));
+    }
+    throw new Error("INFRA_DB_TIMEOUT");
   }
 }

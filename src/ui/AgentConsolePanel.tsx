@@ -1050,6 +1050,22 @@ export function AgentConsolePanel(props: Props) {
           />
         </label>
         <label>
+          database_url
+          <input
+            value={String(settings?.databaseUrl || "")}
+            onChange={(e) => setSettings({ ...(settings || {}), databaseUrl: e.target.value })}
+            onBlur={() => void saveSettings({ databaseUrl: String(settings?.databaseUrl || "") })}
+          />
+        </label>
+        <label>
+          infra_compose
+          <input
+            value={String(settings?.infraComposePath || "")}
+            onChange={(e) => setSettings({ ...(settings || {}), infraComposePath: e.target.value })}
+            onBlur={() => void saveSettings({ infraComposePath: String(settings?.infraComposePath || "") })}
+          />
+        </label>
+        <label>
           sidecar_python
           <input
             value={String(settings?.sidecarPythonPath || "")}
@@ -1095,6 +1111,18 @@ export function AgentConsolePanel(props: Props) {
             }}
           />
           <span className="small">auto_start</span>
+        </label>
+        <label className="row" style={{ gap: 6, alignItems: "center", minWidth: 160 }}>
+          <input
+            type="checkbox"
+            checked={Boolean(settings?.autoStartInfra ?? true)}
+            onChange={(e) => {
+              const v = e.target.checked;
+              setSettings({ ...(settings || {}), autoStartInfra: v });
+              void saveSettings({ autoStartInfra: v });
+            }}
+          />
+          <span className="small">auto_start_infra</span>
         </label>
         <label>
           book_id

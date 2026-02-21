@@ -67,6 +67,13 @@ cmd /c npm run dist
 - 桌面应用优先启动安装包内 `resources/sidecar/sidecar.exe`
 - 若不存在则回退到 `engine/.venv` 或系统 Python
 - 默认自动启动 sidecar，可在 UI 关闭 `auto_start`
+- 默认自动拉起本地数据库基础设施（`docker compose up -d postgres`），可在 UI 关闭 `auto_start_infra`
+- 可在 UI 修改 `database_url` 与 `infra_compose`，实现本地/远端数据库切换
+
+4. 首次使用建议：
+- 安装并启动 Docker Desktop
+- 打开应用后点击 `One-Click Ready`
+- 若成功，`sidecar health` 与 `health` 均为 `ok`
 
 ## CI 打包（Windows）
 已提供 GitHub Actions 工作流：`.github/workflows/windows-package.yml`
