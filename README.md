@@ -75,6 +75,16 @@ cmd /c npm run dist
 - 打开应用后点击 `One-Click Ready`
 - 若成功，`sidecar health` 与 `health` 均为 `ok`
 
+## 无 Docker 模式（local_pg）
+当你不希望使用 Docker，可在桌面端 Settings 配置：
+- `infra_provider = local_pg`
+- `local_pg_ctl = C:\Program Files\PostgreSQL\16\bin\pg_ctl.exe`
+- `local_initdb = C:\Program Files\PostgreSQL\16\bin\initdb.exe`（可留空自动推断）
+- `local_pg_data = <一个可写目录>`（首次会自动 initdb）
+- `database_url` 指向 `127.0.0.1:<port>`
+
+然后点击 `One-Click Ready`，应用会自动执行本机 PostgreSQL 初始化/启动。
+
 ## CI 打包（Windows）
 已提供 GitHub Actions 工作流：`.github/workflows/windows-package.yml`
 

@@ -7,6 +7,7 @@ export type AgentDesktopSettings = {
   agentToken: string;
   timeoutMs: number;
   databaseUrl: string;
+  infraProvider: "docker" | "local_pg" | "none";
   sidecarPythonPath: string;
   sidecarExecutablePath: string;
   sidecarCwd: string;
@@ -14,6 +15,9 @@ export type AgentDesktopSettings = {
   autoStartSidecar: boolean;
   autoStartInfra: boolean;
   infraComposePath: string;
+  localPgCtlPath: string;
+  localPgInitDbPath: string;
+  localPgDataDir: string;
 };
 
 function resolveDefaults(): AgentDesktopSettings {
@@ -30,6 +34,7 @@ function resolveDefaults(): AgentDesktopSettings {
     agentToken: "",
     timeoutMs: 20000,
     databaseUrl: "postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/novel_db",
+    infraProvider: "docker",
     sidecarPythonPath: process.platform === "win32" ? winVenvPython : unixVenvPython,
     sidecarExecutablePath: "",
     sidecarCwd: engineDir,
@@ -37,6 +42,9 @@ function resolveDefaults(): AgentDesktopSettings {
     autoStartSidecar: true,
     autoStartInfra: true,
     infraComposePath,
+    localPgCtlPath: "",
+    localPgInitDbPath: "",
+    localPgDataDir: path.resolve(app.getPath("userData"), "pgdata"),
   };
 }
 
@@ -55,6 +63,7 @@ export async function getSettings(): Promise<AgentDesktopSettings> {
       agentToken: String(json?.agentToken || ""),
       timeoutMs: Number(json?.timeoutMs || defaults.timeoutMs),
       databaseUrl: String(json?.databaseUrl || defaults.databaseUrl),
+      infraProvider: (json?.infraProvider === "local_pg" || json?.infraProvider === "none" ? json.infraProvider : "docker"),
       sidecarPythonPath: String(json?.sidecarPythonPath || defaults.sidecarPythonPath),
       sidecarExecutablePath: String(json?.sidecarExecutablePath || defaults.sidecarExecutablePath),
       sidecarCwd: String(json?.sidecarCwd || defaults.sidecarCwd),
@@ -62,6 +71,9 @@ export async function getSettings(): Promise<AgentDesktopSettings> {
       autoStartSidecar: Boolean(json?.autoStartSidecar ?? defaults.autoStartSidecar),
       autoStartInfra: Boolean(json?.autoStartInfra ?? defaults.autoStartInfra),
       infraComposePath: String(json?.infraComposePath || defaults.infraComposePath),
+      localPgCtlPath: String(json?.localPgCtlPath || defaults.localPgCtlPath),
+      localPgInitDbPath: String(json?.localPgInitDbPath || defaults.localPgInitDbPath),
+      localPgDataDir: String(json?.localPgDataDir || defaults.localPgDataDir),
     };
   } catch {
     return { ...defaults };
@@ -76,6 +88,7 @@ export async function setSettings(patch: Partial<AgentDesktopSettings>): Promise
     agentToken: String(patch.agentToken ?? curr.agentToken ?? ""),
     timeoutMs: Number(patch.timeoutMs ?? curr.timeoutMs ?? defaults.timeoutMs),
     databaseUrl: String(patch.databaseUrl ?? curr.databaseUrl ?? defaults.databaseUrl),
+    infraProvider: (patch.infraProvider ?? curr.infraProvider ?? defaults.infraProvider) as AgentDesktopSettings["infraProvider"],
     sidecarPythonPath: String(patch.sidecarPythonPath ?? curr.sidecarPythonPath ?? defaults.sidecarPythonPath),
     sidecarExecutablePath: String(
       patch.sidecarExecutablePath ?? curr.sidecarExecutablePath ?? defaults.sidecarExecutablePath
@@ -85,6 +98,9 @@ export async function setSettings(patch: Partial<AgentDesktopSettings>): Promise
     autoStartSidecar: Boolean(patch.autoStartSidecar ?? curr.autoStartSidecar ?? defaults.autoStartSidecar),
     autoStartInfra: Boolean(patch.autoStartInfra ?? curr.autoStartInfra ?? defaults.autoStartInfra),
     infraComposePath: String(patch.infraComposePath ?? curr.infraComposePath ?? defaults.infraComposePath),
+    localPgCtlPath: String(patch.localPgCtlPath ?? curr.localPgCtlPath ?? defaults.localPgCtlPath),
+    localPgInitDbPath: String(patch.localPgInitDbPath ?? curr.localPgInitDbPath ?? defaults.localPgInitDbPath),
+    localPgDataDir: String(patch.localPgDataDir ?? curr.localPgDataDir ?? defaults.localPgDataDir),
   };
   await fs.mkdir(path.dirname(settingsPath()), { recursive: true });
   await fs.writeFile(settingsPath(), JSON.stringify(next, null, 2), "utf-8");
