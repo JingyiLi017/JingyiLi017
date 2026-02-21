@@ -37,6 +37,13 @@ function createWindow() {
     }
   });
 
+  win.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL) => {
+    const msg = `[ui] did-fail-load code=${errorCode} url=${validatedURL} desc=${errorDescription}`;
+    // eslint-disable-next-line no-console
+    console.error(msg);
+    win.webContents.send("log:append", msg);
+  });
+
   if (isDev) {
     win.loadURL("http://localhost:5173");
     win.webContents.openDevTools({ mode: "detach" });
