@@ -43,22 +43,18 @@
       "dist-electron/**",
       "package.json"
     ],
-    "extraResources": [
-      {
-        "from": "engine/dist/sidecar",
-        "to": "sidecar",
-        "filter": [
-          "**/*"
-        ]
-      },
-      {
-        "from": "infra",
-        "to": "infra",
-        "filter": [
-          "**/*"
-        ]
-      }
-    ],
+   "extraResources": [
+  {
+    "from": "engine/dist/sidecar", 
+    "to": "bin/sidecar",        
+    "filter": ["**/*"]
+  },
+  {
+    "from": "infra",
+    "to": "infra",
+    "filter": ["**/*"]
+  }
+],
     "win": {
       "target": [
         "nsis"

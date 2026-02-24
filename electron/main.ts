@@ -27,13 +27,21 @@ function psQuote(input: string) {
 }
 
 function createWindow() {
+  // 建议将 preload 路径提取出来调试
+  const preloadPath = app.isPackaged
+    ? path.join(__dirname, 'preload.js') // 打包后通常在同级
+    : path.join(__dirname, 'preload.js'); 
+
+  console.log("Preload loading from:", preloadPath);
+
   const win = new BrowserWindow({
     width: 1200,
     height: 820,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      sandbox: false, // 💡 重要：如果是散装 JS 引用，关闭沙盒可以提高模块兼容性
     }
   });
 
