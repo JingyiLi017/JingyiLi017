@@ -153,6 +153,29 @@ prev_deferred AS (
   WHERE c_prev."order" = b.chapter_no - 1
   ORDER BY ct.created_at DESC
   LIMIT 1
+),
+outline_src AS (
+  SELECT o.version, COALESCE(o.content, '{}'::jsonb) AS content
+  FROM outline o
+  JOIN base b ON b.chapter_id = o.chapter_id
+  WHERE o.scope = 'chapter'
+  ORDER BY o.version DESC, o.created_at DESC
+  LIMIT 1
+),
+outline_nodes AS (
+  SELECT COALESCE(
+    jsonb_agg(
+      jsonb_build_object(
+        'node_id', COALESCE(node->>'node_id', ''),
+        'type', COALESCE(node->>'type', ''),
+        'summary', LEFT(COALESCE(node->>'summary', ''), 180)
+      )
+      ORDER BY ord
+    ),
+    '[]'::jsonb
+  ) AS rows
+  FROM outline_src o
+  LEFT JOIN LATERAL jsonb_array_elements(COALESCE(o.content->'nodes', '[]'::jsonb)) WITH ORDINALITY AS e(node, ord) ON TRUE
 )
 SELECT jsonb_build_object(
   'context', jsonb_build_object(
@@ -165,6 +188,11 @@ SELECT jsonb_build_object(
   'timeline_facts', COALESCE((SELECT rows FROM timeline_facts), '[]'::jsonb),
   'open_foreshadows', COALESCE((SELECT rows FROM open_foreshadows), '[]'::jsonb),
   'growth_milestones', COALESCE((SELECT rows FROM growth_nodes), '[]'::jsonb),
+  'chapter_outline', jsonb_build_object(
+    'version', COALESCE((SELECT version FROM outline_src), 0),
+    'chapter_title', COALESCE((SELECT content->>'chapter_title' FROM outline_src), ''),
+    'nodes', COALESCE((SELECT rows FROM outline_nodes), '[]'::jsonb)
+  ),
   'deferred_tasks_in', COALESCE((SELECT rows FROM prev_deferred), '[]'::jsonb),
   'reader_state', CASE
     WHEN (SELECT reader_state FROM rs) IS NULL OR (SELECT reader_state FROM rs) = '{}'::jsonb

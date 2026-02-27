@@ -170,6 +170,16 @@ class ProfileLearnFromTextsRequest(BaseModel):
     note: str | None = None
 
 
+class StyleEvolutionRequest(BaseModel):
+    profile_id: UUID | None = None
+    sample_limit: int = Field(default=24, ge=6, le=120)
+    min_sample_count: int = Field(default=6, ge=3, le=80)
+    alpha: float = Field(default=0.58, ge=0.1, le=1.0)
+    force: bool = False
+    sync_book_settings: bool = True
+    note: str | None = None
+
+
 class ProfileSetActiveVersionRequest(BaseModel):
     version: int = Field(ge=1)
     note: str | None = None
@@ -200,6 +210,30 @@ class SplitbookCreateRequest(BaseModel):
 
 class SplitbookAllowGuardRequest(BaseModel):
     allow_guard: bool
+
+
+class MasterOutlineVolumeInput(BaseModel):
+    volume_no: int | None = Field(default=None, ge=1)
+    title: str | None = None
+    note: str | None = None
+    start_chapter_no: int | None = Field(default=None, ge=1)
+    end_chapter_no: int | None = Field(default=None, ge=1)
+    planned_chapters: int | None = Field(default=None, ge=1)
+
+
+class MasterOutlineAutoGenerateRequest(BaseModel):
+    genre: str | None = None
+    theme: str | None = None
+    tone: str | None = None
+    audience: str | None = None
+    idea: str | None = None
+    setting: str | None = None
+    planned_chapters: int | None = Field(default=None, ge=1, le=9999)
+    volume_items: list[MasterOutlineVolumeInput] = Field(default_factory=list)
+    splitbook_id: UUID | None = None
+    structure_hints: dict[str, Any] = Field(default_factory=dict)
+    material_refs: list[str] = Field(default_factory=list)
+    llm_model: str | None = None
 
 
 class ProfileItem(BaseModel):
@@ -273,6 +307,9 @@ class StructureBeatsExtractRequest(BaseModel):
     scope: dict[str, list[int]] = Field(default_factory=lambda: {"chapter_range": [1, 50]})
     schema_ver: int = 1
     llm_model: str | None = None
+    trigger_source: str | None = None
+    trigger_entry: str | None = None
+    trigger_mode: Literal["manual", "recommended", "one_click", "auto"] | None = None
 
 
 class GenerateTemplateFromBeatsRequest(BaseModel):
@@ -289,6 +326,9 @@ class TensionEvalRequest(BaseModel):
     llm_model: str = DEFAULT_LLM_MODEL
     targets: dict[str, float] = Field(default_factory=lambda: dict(DEFAULT_TENSION_TARGETS))
     schema_ver: int = 1
+    trigger_source: str | None = None
+    trigger_entry: str | None = None
+    trigger_mode: Literal["manual", "recommended", "one_click", "auto"] | None = None
 
 
 class TensionApplyRequest(BaseModel):
@@ -317,8 +357,12 @@ class TensionControlPlanRequest(BaseModel):
     outline_id: UUID | None = None
     targets: TensionControlTargets = Field(default_factory=TensionControlTargets)
     style: TensionControlStyle = Field(default_factory=TensionControlStyle)
+    material_refs: list[str] = Field(default_factory=list)
     llm_model: str = DEFAULT_LLM_MODEL
     schema_ver: int = 1
+    trigger_source: str | None = None
+    trigger_entry: str | None = None
+    trigger_mode: Literal["manual", "recommended", "one_click", "auto"] | None = None
 
 
 class MechanicsPreviewRequest(BaseModel):
@@ -426,6 +470,9 @@ class OutlinePatchApplyRequest(BaseModel):
     targets: TensionControlTargets = Field(default_factory=TensionControlTargets)
     style: TensionControlStyle = Field(default_factory=TensionControlStyle)
     auto_eval: bool = True
+    trigger_source: str | None = None
+    trigger_entry: str | None = None
+    trigger_mode: Literal["manual", "recommended", "one_click", "auto"] | None = None
 
 
 class BookTensionRepairPlanRequest(BaseModel):
@@ -574,6 +621,9 @@ class DraftCommitRequest(BaseModel):
     text_content: str | None = None
     outline_version: int | None = None
     writeback: DraftCommitWriteback = Field(default_factory=DraftCommitWriteback)
+    trigger_source: str | None = None
+    trigger_entry: str | None = None
+    trigger_mode: Literal["manual", "recommended", "one_click", "auto"] | None = None
 
 
 class RefInboxFromTemplateRequest(BaseModel):

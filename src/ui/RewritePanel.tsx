@@ -32,7 +32,7 @@ export function RewritePanel({ bookId, chapterId, onStatus }: Props) {
         text: sourceText || undefined,
       });
       setResult(out || {});
-      onStatus?.(`Rewrite ${level} completed`);
+      onStatus?.(`改写 ${level} 已完成`);
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -44,7 +44,7 @@ export function RewritePanel({ bookId, chapterId, onStatus }: Props) {
     if (!result?.rewritten_text) return;
     const src = String(result?.source_draft_id || sourceDraftId || "").trim();
     if (!src) {
-      setErr("source_draft_id missing");
+      setErr("缺少 source_draft_id");
       return;
     }
     setBusy("accept");
@@ -58,7 +58,7 @@ export function RewritePanel({ bookId, chapterId, onStatus }: Props) {
         diff: result?.diff || {},
       });
       setAcceptResult(out || {});
-      onStatus?.(`Rewrite accepted: ${String(out?.accepted_draft_id || "")}`);
+      onStatus?.(`改写已接纳：${String(out?.accepted_draft_id || "")}`);
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -68,14 +68,14 @@ export function RewritePanel({ bookId, chapterId, onStatus }: Props) {
 
   return (
     <section className="wb-panel" style={{ minHeight: "auto", marginBottom: 10 }}>
-      <h3>Rewrite + Diff</h3>
+      <h3>改写与差异对比</h3>
       <div className="row" style={{ gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
         <label>
-          source_draft_id
-          <input value={sourceDraftId} onChange={(e) => setSourceDraftId(e.target.value)} placeholder="optional uuid" />
+          源稿 ID
+          <input value={sourceDraftId} onChange={(e) => setSourceDraftId(e.target.value)} placeholder="可选 UUID" />
         </label>
         <label>
-          level
+          改写强度
           <select value={level} onChange={(e) => setLevel(e.target.value as any)}>
             <option value="L1">L1</option>
             <option value="L2">L2</option>
@@ -83,31 +83,31 @@ export function RewritePanel({ bookId, chapterId, onStatus }: Props) {
           </select>
         </label>
         <button onClick={() => void runRewrite()} disabled={!bookId || !chapterId || !!busy}>
-          {busy === "run" ? "Running..." : "Run Rewrite"}
+          {busy === "run" ? "执行中..." : "开始改写"}
         </button>
         <button onClick={() => void acceptRewrite()} disabled={!rewrittenText || !!busy}>
-          {busy === "accept" ? "Accepting..." : "Accept Rewrite"}
+          {busy === "accept" ? "接纳中..." : "接纳改写"}
         </button>
       </div>
       <div className="small" style={{ marginTop: 6 }}>
-        Tip: provide either <code>source_draft_id</code> or source text. If both are empty, server will reject.
+        提示：可提供 <code>source_draft_id</code> 或源文本，二者都为空时服务端会拒绝。
       </div>
       <textarea
         style={{ marginTop: 8 }}
         value={sourceText}
         onChange={(e) => setSourceText(e.target.value)}
-        placeholder="Optional source text override"
+        placeholder="可选：覆盖源文本"
       />
       {err ? <div className="hint" style={{ color: "#7f1d1d", marginTop: 8 }}>{err}</div> : null}
       {result ? (
         <>
           <div className="job-grid" style={{ marginTop: 8 }}>
             <div>
-              <div className="small">rewrite_report</div>
+              <div className="small">改写报告</div>
               <pre>{JSON.stringify(result?.rewrite_report || {}, null, 2)}</pre>
             </div>
             <div>
-              <div className="small">accept_result</div>
+              <div className="small">接纳结果</div>
               <pre>{JSON.stringify(acceptResult || {}, null, 2)}</pre>
             </div>
           </div>
@@ -117,4 +117,3 @@ export function RewritePanel({ bookId, chapterId, onStatus }: Props) {
     </section>
   );
 }
-

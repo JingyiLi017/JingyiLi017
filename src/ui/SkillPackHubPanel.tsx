@@ -68,7 +68,7 @@ export function SkillPackHubPanel({ bookId, volumeId, onStatus }: Props) {
       setSelectedPackIds(Array.isArray(out?.selected_pack_ids) ? out.selected_pack_ids : []);
       if (out?.automation && typeof out.automation === "object") setAutomation(out.automation);
       if (typeof out?.automation_preset === "string" && out.automation_preset.trim()) setPreset(out.automation_preset.trim());
-      onStatus?.("Skill packs binding loaded");
+      onStatus?.("技能包绑定已加载");
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -88,7 +88,7 @@ export function SkillPackHubPanel({ bookId, volumeId, onStatus }: Props) {
         automation,
       });
       setBindingOut(out || null);
-      onStatus?.(`Skill packs bound (${selectedPackIds.length})`);
+      onStatus?.(`技能包绑定已保存（${selectedPackIds.length}）`);
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -110,7 +110,7 @@ export function SkillPackHubPanel({ bookId, volumeId, onStatus }: Props) {
       });
       setRunOut(out || null);
       const executed = Array.isArray(out?.execution?.executed) ? out.execution.executed.length : 0;
-      onStatus?.(`Skill auto run finished (executed=${executed})`);
+      onStatus?.(`技能自动运行完成（已执行 ${executed} 项）`);
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -134,19 +134,19 @@ export function SkillPackHubPanel({ bookId, volumeId, onStatus }: Props) {
 
   return (
     <section className="wb-panel">
-      <h3>Skill Pack Hub</h3>
+      <h3>技能包中心</h3>
       <div className="row">
         <button onClick={() => void loadCatalog()} disabled={!!busy}>
-          Refresh Catalog
+          刷新目录
         </button>
         <button onClick={() => void loadBinding()} disabled={!bookId || !!busy}>
-          Load Binding
+          加载绑定
         </button>
         <button onClick={() => void saveBinding()} disabled={!bookId || !!busy}>
-          Save Binding
+          保存绑定
         </button>
         <button onClick={() => void runAuto()} disabled={!canRun || !!busy}>
-          {busy === "auto:run" ? "Running..." : "One-Click Auto Run"}
+          {busy === "auto:run" ? "执行中..." : "一键自动运行"}
         </button>
       </div>
       <div className="small" style={{ marginTop: 6 }}>
@@ -162,7 +162,7 @@ export function SkillPackHubPanel({ bookId, volumeId, onStatus }: Props) {
 
       <div className="agent-grid" style={{ marginTop: 8 }}>
         <div className="agent-col">
-          <div className="small">Skill Packs</div>
+          <div className="small">技能包列表</div>
           <div className="scroll" style={{ maxHeight: 220 }}>
             {catalog.map((it) => {
               const pid = String(it?.pack_id || "");
@@ -184,19 +184,19 @@ export function SkillPackHubPanel({ bookId, volumeId, onStatus }: Props) {
                 </label>
               );
             })}
-            {catalog.length === 0 ? <div className="hint">No catalog loaded</div> : null}
+            {catalog.length === 0 ? <div className="hint">尚未加载目录</div> : null}
           </div>
         </div>
 
         <div className="agent-col">
-          <div className="small">Automation</div>
+          <div className="small">自动化策略</div>
           <label className="row">
             <input
               type="checkbox"
               checked={!!automation.auto_preflight}
               onChange={(e) => setAutomation((p: any) => ({ ...p, auto_preflight: e.target.checked }))}
             />
-            <span>Auto Preflight</span>
+            <span>自动预检</span>
           </label>
           <label className="row">
             <input
@@ -204,7 +204,7 @@ export function SkillPackHubPanel({ bookId, volumeId, onStatus }: Props) {
               checked={!!automation.auto_low_risk_fix}
               onChange={(e) => setAutomation((p: any) => ({ ...p, auto_low_risk_fix: e.target.checked }))}
             />
-            <span>Auto Low-Risk Fix</span>
+            <span>自动低风险修复</span>
           </label>
           <label className="row">
             <input
@@ -212,7 +212,7 @@ export function SkillPackHubPanel({ bookId, volumeId, onStatus }: Props) {
               checked={!!automation.auto_plan_autobuild}
               onChange={(e) => setAutomation((p: any) => ({ ...p, auto_plan_autobuild: e.target.checked }))}
             />
-            <span>Auto Plan Autobuild</span>
+            <span>自动规划自动构建</span>
           </label>
           <label className="row">
             <input
@@ -220,7 +220,7 @@ export function SkillPackHubPanel({ bookId, volumeId, onStatus }: Props) {
               checked={!!automation.auto_rewrite_suggest}
               onChange={(e) => setAutomation((p: any) => ({ ...p, auto_rewrite_suggest: e.target.checked }))}
             />
-            <span>Auto Rewrite Suggest</span>
+            <span>自动改写建议</span>
           </label>
           <label className="row">
             <input
@@ -228,10 +228,10 @@ export function SkillPackHubPanel({ bookId, volumeId, onStatus }: Props) {
               checked={!!automation.auto_low_risk_only}
               onChange={(e) => setAutomation((p: any) => ({ ...p, auto_low_risk_only: e.target.checked }))}
             />
-            <span>Low-Risk Only</span>
+            <span>仅低风险</span>
           </label>
           <label className="row">
-            <span className="small">Max Auto Fixes</span>
+            <span className="small">自动修复上限</span>
             <input
               type="number"
               min={1}
@@ -244,10 +244,10 @@ export function SkillPackHubPanel({ bookId, volumeId, onStatus }: Props) {
         </div>
 
         <div className="agent-col">
-          <div className="small">Result</div>
+          <div className="small">运行结果</div>
           {runOut ? (
             <div className="small" style={{ marginBottom: 6 }}>
-              manual fixes pending: {manualFixCount}
+              待人工处理修复：{manualFixCount}
             </div>
           ) : null}
           <pre>{JSON.stringify(runOut || bindingOut || {}, null, 2)}</pre>

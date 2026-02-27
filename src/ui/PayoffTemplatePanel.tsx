@@ -6,6 +6,18 @@ type Props = {
 };
 
 const TYPES = ["reversal", "cost", "misinterpretation", "emotional", "parallel"];
+const TYPE_LABELS: Record<string, string> = {
+  reversal: "反转(reversal)",
+  cost: "代价(cost)",
+  misinterpretation: "误读(misinterpretation)",
+  emotional: "情绪(emotional)",
+  parallel: "对照(parallel)",
+};
+const SORT_LABELS: Record<string, string> = {
+  impact_desc: "影响力(impact)↓",
+  gain_desc: "增益(gain)↓",
+  hits_desc: "命中(hits)↓",
+};
 
 function emptyDraft() {
   return {
@@ -110,7 +122,12 @@ export function PayoffTemplatePanel({ baseUrl, onStatus }: Props) {
       });
       if (!res.ok) throw new Error(`PAYOFF_TEMPLATE_SAVE_FAILED:${res.status}`);
       const out = await res.json();
-      onStatus(`Payoff template ${String(out.mode || "saved")}: ${String(out?.item?.template_id || "").slice(0, 8)}`);
+      const mode = String(out.mode || "saved");
+      const modeLabel =
+        mode === "created" ? "已创建" :
+        mode === "updated" ? "已更新" :
+        mode === "saved" ? "已保存" : mode;
+      onStatus(`回收模板${modeLabel}：${String(out?.item?.template_id || "").slice(0, 8)}`);
       setDraft(emptyDraft());
       await load();
     } catch (err: any) {
@@ -122,7 +139,7 @@ export function PayoffTemplatePanel({ baseUrl, onStatus }: Props) {
     try {
       const res = await fetch(`${baseUrl}/v1/payoff_templates/${templateId}`, { method: "DELETE" });
       if (!res.ok) throw new Error(`PAYOFF_TEMPLATE_DELETE_FAILED:${res.status}`);
-      onStatus(`Payoff template deleted: ${templateId.slice(0, 8)}`);
+      onStatus(`回收模板已删除：${templateId.slice(0, 8)}`);
       if (String(draft.template_id || "") === templateId) {
         setDraft(emptyDraft());
       }
@@ -142,7 +159,7 @@ export function PayoffTemplatePanel({ baseUrl, onStatus }: Props) {
       intensity_level: Number(it.intensity_level || 2),
       risk_score: it.risk_score == null ? "" : String(it.risk_score),
     });
-    onStatus(`Template cloned to editor: ${String(it.template_id || "").slice(0, 8)}`);
+    onStatus(`模板已复制到编辑器：${String(it.template_id || "").slice(0, 8)}`);
   }
 
   useEffect(() => {
@@ -152,35 +169,35 @@ export function PayoffTemplatePanel({ baseUrl, onStatus }: Props) {
 
   return (
     <div style={{ marginTop: 10 }}>
-      <div className="h2">Payoff Templates</div>
+      <div className="h2">回收模板库</div>
       <div className="row" style={{ gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-        <button onClick={() => void load()} disabled={loading}>{loading ? "Loading..." : "Refresh"}</button>
+        <button onClick={() => void load()} disabled={loading}>{loading ? "加载中..." : "刷新"}</button>
         <label>
-          Type
+          类型
           <select value={filterType} onChange={(e) => setFilterType(e.target.value)}>
-            <option value="">(all)</option>
+            <option value="">(全部)</option>
             {TYPES.map((x) => (
-              <option key={x} value={x}>{x}</option>
+              <option key={x} value={x}>{TYPE_LABELS[x] || x}</option>
             ))}
           </select>
         </label>
         <label>
-          Sort
+          排序
           <select value={sortBy} onChange={(e) => setSortBy(e.target.value as any)}>
-            <option value="impact_desc">impact(desc)</option>
-            <option value="gain_desc">gain(desc)</option>
-            <option value="hits_desc">hits(desc)</option>
+            <option value="impact_desc">{SORT_LABELS.impact_desc}</option>
+            <option value="gain_desc">{SORT_LABELS.gain_desc}</option>
+            <option value="hits_desc">{SORT_LABELS.hits_desc}</option>
           </select>
         </label>
-        <div className="small mono">count={filtered.length}</div>
+        <div className="small mono">数量={filtered.length}</div>
       </div>
 
       <div className="row" style={{ gap: 10, alignItems: "stretch", marginTop: 8 }}>
         <div className="card" style={{ flex: "1 1 55%" }}>
-          <div className="h2">Library</div>
+          <div className="h2">模板库</div>
           <div className="scroll" style={{ maxHeight: 240 }}>
             {filtered.length === 0 ? (
-              <div className="hint">No templates.</div>
+              <div className="hint">暂无模板。</div>
             ) : (
               filtered.map((it) => (
                 <div key={String(it.template_id)} className="node-item" style={{ cursor: "default", marginBottom: 6 }}>
@@ -189,18 +206,18 @@ export function PayoffTemplatePanel({ baseUrl, onStatus }: Props) {
                     return (
                   <div style={{ width: "100%" }}>
                     <div className="row">
-                      <strong>{String(it.type || "-")}</strong>
+                      <strong>{TYPE_LABELS[String(it.type || "")] || String(it.type || "-")}</strong>
                       <span className="chip">L{String(it.intensity_level || "-")}</span>
-                      <span className="chip">hits30d:{String(s.hits)}</span>
-                      <span className="chip">gain:{s.avg_delta.toFixed(3)}</span>
-                      <span className="chip">impact:{s.impact.toFixed(3)}</span>
+                      <span className="chip">30天命中(hits30d):{String(s.hits)}</span>
+                      <span className="chip">增益(gain):{s.avg_delta.toFixed(3)}</span>
+                      <span className="chip">影响力(impact):{s.impact.toFixed(3)}</span>
                     </div>
-                    <div className="small mono">{String(it.template_id || "").slice(0, 8)} · foreshadow={JSON.stringify(it.applicable_foreshadow_type || [])}</div>
+                    <div className="small mono">{String(it.template_id || "").slice(0, 8)} · 适用伏笔(foreshadow)={JSON.stringify(it.applicable_foreshadow_type || [])}</div>
                     <div className="small">{String(it.structure_pattern || "").slice(0, 140)}</div>
                     <div className="row" style={{ gap: 6, marginTop: 4 }}>
-                      <button onClick={() => selectEdit(it)}>Edit</button>
-                      <button onClick={() => cloneAsNew(it)}>Clone</button>
-                      <button onClick={() => void remove(String(it.template_id))}>Delete</button>
+                      <button onClick={() => selectEdit(it)}>编辑</button>
+                      <button onClick={() => cloneAsNew(it)}>复制</button>
+                      <button onClick={() => void remove(String(it.template_id))}>删除</button>
                     </div>
                   </div>
                     );
@@ -212,30 +229,30 @@ export function PayoffTemplatePanel({ baseUrl, onStatus }: Props) {
         </div>
 
         <div className="card" style={{ flex: "1 1 45%" }}>
-          <div className="h2">{draft.template_id ? "Edit Template" : "Create Template"}</div>
+          <div className="h2">{draft.template_id ? "编辑模板" : "新建模板"}</div>
           <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
             <label>
-              Type
+              类型
               <select value={draft.type} onChange={(e) => setDraft({ ...draft, type: e.target.value })}>
                 {TYPES.map((x) => (
-                  <option key={x} value={x}>{x}</option>
+                  <option key={x} value={x}>{TYPE_LABELS[x] || x}</option>
                 ))}
               </select>
             </label>
             <label>
-              Intensity
+              强度
               <input
                 value={String(draft.intensity_level)}
                 onChange={(e) => setDraft({ ...draft, intensity_level: Math.max(1, Math.min(3, Number(e.target.value || 2))) })}
               />
             </label>
             <label>
-              Risk
-              <input value={String(draft.risk_score)} onChange={(e) => setDraft({ ...draft, risk_score: e.target.value })} placeholder="optional" />
+              风险
+              <input value={String(draft.risk_score)} onChange={(e) => setDraft({ ...draft, risk_score: e.target.value })} placeholder="可选" />
             </label>
           </div>
           <label>
-            Applicable Foreshadow Types (comma)
+            适用伏笔类型（逗号分隔）
             <input
               value={String(draft.applicable_foreshadow_type)}
               onChange={(e) => setDraft({ ...draft, applicable_foreshadow_type: e.target.value })}
@@ -243,7 +260,7 @@ export function PayoffTemplatePanel({ baseUrl, onStatus }: Props) {
             />
           </label>
           <label>
-            Structure Pattern
+            结构模式
             <textarea
               value={String(draft.structure_pattern)}
               onChange={(e) => setDraft({ ...draft, structure_pattern: e.target.value })}
@@ -251,7 +268,7 @@ export function PayoffTemplatePanel({ baseUrl, onStatus }: Props) {
             />
           </label>
           <label>
-            Rewrite Instruction
+            改写指令
             <textarea
               value={String(draft.rewrite_instruction)}
               onChange={(e) => setDraft({ ...draft, rewrite_instruction: e.target.value })}
@@ -259,8 +276,8 @@ export function PayoffTemplatePanel({ baseUrl, onStatus }: Props) {
             />
           </label>
           <div className="row" style={{ gap: 6, marginTop: 6 }}>
-            <button onClick={() => void save()}>Save</button>
-            <button onClick={() => setDraft(emptyDraft())}>Reset</button>
+            <button onClick={() => void save()}>保存</button>
+            <button onClick={() => setDraft(emptyDraft())}>重置</button>
           </div>
         </div>
       </div>

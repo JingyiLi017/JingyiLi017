@@ -29,6 +29,10 @@ class Settings:
     )
     ollama_host: str = _normalize_ollama_host(os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434"))
     embedding_model: str = os.getenv("EMBEDDING_MODEL", "bge-m3:latest")
+    splitbook_extract_provider: str = os.getenv("SPLITBOOK_EXTRACT_PROVIDER", "rules")
+    splitbook_extract_model: str = os.getenv("SPLITBOOK_EXTRACT_MODEL", "qwen2.5:14b-instruct")
+    splitbook_extract_subtask_retries: int = int(os.getenv("SPLITBOOK_EXTRACT_SUBTASK_RETRIES", "2"))
+    splitbook_extract_timeout_s: int = int(os.getenv("SPLITBOOK_EXTRACT_TIMEOUT_S", "90"))
 
 
 settings = Settings()

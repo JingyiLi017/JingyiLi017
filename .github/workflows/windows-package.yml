@@ -2,6 +2,11 @@ name: Windows Package
 
 on:
   workflow_dispatch:
+    inputs:
+      package_target:
+        description: 打包目标（dir / installer / both）
+        required: false
+        default: both
   push:
     branches: [ "main", "master" ]
     paths:
@@ -14,10 +19,16 @@ on:
       - "tsconfig*.json"
       - ".github/workflows/windows-package.yml"
 
+concurrency:
+  group: windows-package-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   package-windows:
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
+    permissions:
+      contents: read
     env:
       ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
       ELECTRON_BUILDER_BINARIES_MIRROR: https://npmmirror.com/mirrors/electron-builder-binaries/
@@ -36,6 +47,8 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+          cache: "pip"
+          cache-dependency-path: "engine/requirements.txt"
 
       - name: Create engine venv
         shell: pwsh
@@ -46,17 +59,65 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
-      - name: Build unpacked app (includes sidecar build)
+      - name: Build package
         shell: pwsh
         run: |
-          npm run dist:dir
+          $target = "${{ github.event.inputs.package_target }}"
+          if ([string]::IsNullOrWhiteSpace($target)) {
+            if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+              $target = "both"
+            } else {
+              $target = "dir"
+            }
+          }
+          Write-Host "[workflow] package_target=$target"
+
+          if ($target -eq "dir") {
+            npm run dist:dir
+            exit $LASTEXITCODE
+          }
+          if ($target -eq "installer") {
+            npm run dist
+            exit $LASTEXITCODE
+          }
+          if ($target -eq "both") {
+            & powershell -ExecutionPolicy Bypass -File scripts/dist_win.ps1 -Dir
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            & powershell -ExecutionPolicy Bypass -File scripts/dist_win.ps1 -SkipBuild
+            exit $LASTEXITCODE
+          }
+          throw "Unsupported package_target: $target"
+
+      - name: Print release tree
+        if: always()
+        shell: pwsh
+        run: |
+          if (Test-Path release) {
+            Get-ChildItem release -Recurse | Select-Object FullName, Length
+          } else {
+            Write-Host "release folder not found"
+          }
 
       - name: Upload win-unpacked
+        if: ${{ github.event_name == 'push' || !github.event.inputs.package_target || github.event.inputs.package_target == 'dir' || github.event.inputs.package_target == 'both' }}
         uses: actions/upload-artifact@v4
         with:
           name: win-unpacked
           path: release/win-unpacked/**
           if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload installer package
+        if: ${{ github.event_name == 'workflow_dispatch' && (!github.event.inputs.package_target || github.event.inputs.package_target == 'installer' || github.event.inputs.package_target == 'both') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: win-installer
+          path: |
+            release/*.exe
+            release/*.blockmap
+            release/latest*.yml
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Upload sidecar exe
         uses: actions/upload-artifact@v4
@@ -64,4 +125,4 @@ jobs:
           name: sidecar-exe
           path: engine/dist/sidecar/sidecar.exe
           if-no-files-found: error
-
+          retention-days: 14

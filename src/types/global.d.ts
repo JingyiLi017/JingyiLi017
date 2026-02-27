@@ -14,10 +14,16 @@ declare global {
       pathExists: (path: string) => Promise<{ ok: boolean; exists: boolean }>;
       settingsGet: () => Promise<any>;
       settingsSet: (patch: any) => Promise<any>;
+      pickSplitbookLocalFile: () => Promise<{ canceled: boolean; path: string }>;
+      pickSplitbookOutputDir: () => Promise<{ canceled: boolean; path: string }>;
+      diagnoseEngine: () => Promise<any>;
       agentHealth: () => Promise<any>;
       agentDiagnose: (req: any) => Promise<any>;
       agentPropose: (req: any) => Promise<any>;
       agentApply: (req: any) => Promise<any>;
+      agentOrchestratePlan: (req: any) => Promise<any>;
+      agentOrchestrateStep: (req: any) => Promise<any>;
+      agentOrchestrateRun: (req: any) => Promise<any>;
       agentRollback: (req: any) => Promise<any>;
       agentAuditsList: (req: any) => Promise<any>;
       agentComboInjectionsList: (req: any) => Promise<any>;
@@ -29,6 +35,7 @@ declare global {
       workflowRollbackRun: (req: any) => Promise<any>;
       draftRun: (req: any) => Promise<any>;
       draftGet: (req: any) => Promise<any>;
+      draftDelete: (req: any) => Promise<any>;
       rewriteRun: (req: any) => Promise<any>;
       rewriteAccept: (req: any) => Promise<any>;
       chapterDrafts: (req: any) => Promise<any>;

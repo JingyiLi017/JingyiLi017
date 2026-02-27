@@ -22,10 +22,10 @@ type ComboRow = {
 const comboTypeOrder = ["setup_hook_combo", "mid_spike_combo", "reveal_combo", "vol_end_combo"];
 
 function typeLabel(t: string) {
-  if (t === "setup_hook_combo") return "Setup Hook";
-  if (t === "mid_spike_combo") return "Mid Spike";
-  if (t === "reveal_combo") return "Reveal";
-  if (t === "vol_end_combo") return "Vol End";
+  if (t === "setup_hook_combo") return "起手钩子（Setup Hook）";
+  if (t === "mid_spike_combo") return "中段高峰（Mid Spike）";
+  if (t === "reveal_combo") return "揭示（Reveal）";
+  if (t === "vol_end_combo") return "卷末（Vol End）";
   return t;
 }
 
@@ -54,7 +54,7 @@ export function ComboLeaderboardPanel({ baseUrl, bookId, onStatus, onOpenTrace }
       body: JSON.stringify({ policy }),
     });
     if (!res.ok) throw new Error(`STRUCTURE_COMBO_POLICY_FAILED:${res.status}`);
-    onStatus(`Combo policy updated: ${comboId.slice(0, 8)} -> ${policy}`);
+    onStatus(`组合策略已更新：${comboId.slice(0, 8)} -> ${policy}`);
     await load();
   }
 
@@ -66,13 +66,13 @@ export function ComboLeaderboardPanel({ baseUrl, bookId, onStatus, onOpenTrace }
     setEvidence(out);
     setSelectedComboId(comboId);
     setDrawerOpen(true);
-    onStatus(`Combo evidence loaded: ${comboId.slice(0, 8)}`);
+    onStatus(`组合证据已加载：${comboId.slice(0, 8)}`);
   }
 
   const grouped = useMemo(() => {
     const m: Record<string, ComboRow[]> = {};
     for (const r of rows) {
-      const t = String(r.combo_type || "unknown");
+      const t = String(r.combo_type || "未知(unknown)");
       if (!m[t]) m[t] = [];
       m[t].push(r);
     }
@@ -100,14 +100,14 @@ export function ComboLeaderboardPanel({ baseUrl, bookId, onStatus, onOpenTrace }
 
   return (
     <div className="card" style={{ marginTop: 10, position: "relative", overflow: "hidden" }}>
-      <div className="h2">Combo Leaderboard</div>
+      <div className="h2">组合排行榜</div>
       <div className="row" style={{ gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-        <button onClick={() => void load()} disabled={!bookId}>Refresh</button>
-        <div className="small mono">types={orderedTypes.length} · combos={rows.length} {loading ? "· loading..." : ""}</div>
+        <button onClick={() => void load()} disabled={!bookId}>刷新</button>
+        <div className="small mono">类型={orderedTypes.length} · 组合={rows.length} {loading ? "· 加载中..." : ""}</div>
       </div>
 
       <div className="scroll" style={{ maxHeight: 360, marginTop: 8, paddingRight: drawerOpen ? 390 : 0 }}>
-        {rows.length === 0 ? <div className="hint">No combo stats.</div> : null}
+        {rows.length === 0 ? <div className="hint">暂无组合统计。</div> : null}
         {orderedTypes.map((tp) => (
           <div key={tp} style={{ marginTop: 8 }}>
             <div className="row">
@@ -117,13 +117,13 @@ export function ComboLeaderboardPanel({ baseUrl, bookId, onStatus, onOpenTrace }
             <table className="compare-table">
               <thead>
                 <tr>
-                  <th>combo</th>
-                  <th>gain</th>
-                  <th>risk</th>
-                  <th>avg_delta</th>
-                  <th>uses14d</th>
-                  <th>policy</th>
-                  <th>ops</th>
+                  <th>组合</th>
+                  <th>收益</th>
+                  <th>风险</th>
+                  <th>平均差值</th>
+                  <th>14天使用</th>
+                  <th>策略</th>
+                  <th>操作</th>
                 </tr>
               </thead>
               <tbody>
@@ -139,10 +139,10 @@ export function ComboLeaderboardPanel({ baseUrl, bookId, onStatus, onOpenTrace }
                       <td className="mono">{String(r.policy || "-")}</td>
                       <td>
                         <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
-                          <button onClick={() => void viewEvidence(String(r.combo_id || ""))}>Evidence</button>
-                          <button onClick={() => void setPolicy(String(r.combo_id || ""), "pinned")}>Pin</button>
-                          <button onClick={() => void setPolicy(String(r.combo_id || ""), "banned")}>Ban</button>
-                          <button onClick={() => void setPolicy(String(r.combo_id || ""), "normal")}>Normal</button>
+                          <button onClick={() => void viewEvidence(String(r.combo_id || ""))}>证据</button>
+                          <button onClick={() => void setPolicy(String(r.combo_id || ""), "pinned")}>置顶</button>
+                          <button onClick={() => void setPolicy(String(r.combo_id || ""), "banned")}>禁用</button>
+                          <button onClick={() => void setPolicy(String(r.combo_id || ""), "normal")}>正常</button>
                         </div>
                       </td>
                     </tr>
@@ -171,39 +171,39 @@ export function ComboLeaderboardPanel({ baseUrl, bookId, onStatus, onOpenTrace }
           }}
         >
           <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
-            <div className="h2">Combo Evidence</div>
-            <button onClick={() => setDrawerOpen(false)}>Close</button>
+            <div className="h2">组合证据</div>
+            <button onClick={() => setDrawerOpen(false)}>关闭</button>
           </div>
           {!evidence ? (
-            <div className="hint">Select combo and open Evidence.</div>
+            <div className="hint">请选择组合并打开证据。</div>
           ) : (
             <>
               <div className="small mono">
-                {String(evidence?.item?.item_type || "")}:{String(evidence?.item?.item_id || "").slice(0, 8)} · policy={String(evidence?.item?.policy || "-")}
+                {String(evidence?.item?.item_type || "")}:{String(evidence?.item?.item_id || "").slice(0, 8)} · 策略={String(evidence?.item?.policy || "-")}
               </div>
-              <div className="small">title: {String(evidence?.item?.title || "-")}</div>
-              <div className="small mono">fingerprint={String(evidence?.item?.fingerprint || "").slice(0, 12)}</div>
+              <div className="small">标题：{String(evidence?.item?.title || "-")}</div>
+              <div className="small mono">指纹（fingerprint）={String(evidence?.item?.fingerprint || "").slice(0, 12)}</div>
               <div className="row" style={{ gap: 6, marginTop: 8 }}>
                 <button
                   onClick={() => {
                     const tv = String((evidence?.samples || [])[0]?.text_ver_id || "");
                     if (!tv) return;
                     onOpenTrace(tv);
-                    onStatus(`Jumped to trace: ${tv.slice(0, 8)}`);
+                    onStatus(`已跳转追踪：${tv.slice(0, 8)}`);
                   }}
                   disabled={!String((evidence?.samples || [])[0]?.text_ver_id || "")}
                 >
-                  Jump Latest Trace
+                  跳转最新追踪
                 </button>
               </div>
               <div className="scroll" style={{ maxHeight: 220, marginTop: 6 }}>
                 <table className="compare-table">
                   <thead>
                     <tr>
-                      <th>delta</th>
-                      <th>rank</th>
-                      <th>filtered</th>
-                      <th>trace</th>
+                      <th>差值</th>
+                      <th>排名</th>
+                      <th>过滤原因</th>
+                      <th>追踪</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -216,11 +216,11 @@ export function ComboLeaderboardPanel({ baseUrl, bookId, onStatus, onOpenTrace }
                           <button
                             onClick={() => {
                               onOpenTrace(String(s.text_ver_id || ""));
-                              onStatus(`Jumped to trace: ${String(s.text_ver_id || "").slice(0, 8)}`);
+                              onStatus(`已跳转追踪：${String(s.text_ver_id || "").slice(0, 8)}`);
                             }}
                             disabled={!s.text_ver_id}
                           >
-                            Open Trace
+                            打开追踪
                           </button>
                         </td>
                       </tr>
@@ -229,7 +229,7 @@ export function ComboLeaderboardPanel({ baseUrl, bookId, onStatus, onOpenTrace }
                 </table>
               </div>
               <div className="small" style={{ marginTop: 6 }}>
-                diagnosis: <span className="mono">{String(evidence?.diagnosis?.recommendation || "-")}</span> ({String(evidence?.diagnosis?.confidence ?? "-")})
+                诊断：<span className="mono">{String(evidence?.diagnosis?.recommendation || "-")}</span>（{String(evidence?.diagnosis?.confidence ?? "-")}）
               </div>
               <pre style={{ maxHeight: 160, overflow: "auto", marginTop: 6 }}>
                 {JSON.stringify(evidence?.diagnosis?.signals || [], null, 2)}
@@ -241,4 +241,3 @@ export function ComboLeaderboardPanel({ baseUrl, bookId, onStatus, onOpenTrace }
     </div>
   );
 }
-

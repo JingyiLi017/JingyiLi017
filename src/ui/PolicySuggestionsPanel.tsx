@@ -14,6 +14,12 @@ export function PolicySuggestionsPanel({ baseUrl, bookId, onStatus, onOpenTrace 
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [selectedProposalId, setSelectedProposalId] = useState("");
+  const scopeLabels: Record<string, string> = {
+    pending: "待处理(pending)",
+    accepted: "已接受(accepted)",
+    rejected: "已拒绝(rejected)",
+  };
+  const formatScope = (value: string) => scopeLabels[value] || value;
 
   async function load(nextScope: "pending" | "accepted" | "rejected" = scope) {
     if (!bookId) return;
@@ -35,7 +41,7 @@ export function PolicySuggestionsPanel({ baseUrl, bookId, onStatus, onOpenTrace 
     });
     if (!res.ok) throw new Error(`ASSET_PROPOSALS_GENERATE_FAILED:${res.status}`);
     const out = await res.json();
-    onStatus(`Asset proposals generated: ${String(out.created ?? 0)}`);
+    onStatus(`策略建议已生成：${String(out.created ?? 0)}`);
     await load("pending");
   }
 
@@ -46,7 +52,7 @@ export function PolicySuggestionsPanel({ baseUrl, bookId, onStatus, onOpenTrace 
       body: JSON.stringify({ note: "accepted from desktop queue" }),
     });
     if (!res.ok) throw new Error(`ASSET_PROPOSAL_ACCEPT_FAILED:${res.status}`);
-    onStatus(`Proposal accepted: ${proposalId.slice(0, 8)}`);
+    onStatus(`已接受建议：${proposalId.slice(0, 8)}`);
     await load("pending");
   }
 
@@ -57,7 +63,7 @@ export function PolicySuggestionsPanel({ baseUrl, bookId, onStatus, onOpenTrace 
       body: JSON.stringify({ note: "rejected from desktop queue" }),
     });
     if (!res.ok) throw new Error(`ASSET_PROPOSAL_REJECT_FAILED:${res.status}`);
-    onStatus(`Proposal rejected: ${proposalId.slice(0, 8)}`);
+    onStatus(`已拒绝建议：${proposalId.slice(0, 8)}`);
     await load("pending");
   }
 
@@ -68,7 +74,7 @@ export function PolicySuggestionsPanel({ baseUrl, bookId, onStatus, onOpenTrace 
     const out = await res.json();
     setEvidence(out);
     setDrawerOpen(true);
-    onStatus(`Loaded evidence: ${String(itemId).slice(0, 8)}`);
+    onStatus(`已加载证据：${String(itemId).slice(0, 8)}`);
   }
 
   async function learnTags(itemType: string, itemId: string) {
@@ -80,7 +86,7 @@ export function PolicySuggestionsPanel({ baseUrl, bookId, onStatus, onOpenTrace 
     });
     if (!res.ok) throw new Error(`ASSET_TAG_LEARN_FAILED:${res.status}`);
     const out = await res.json();
-    onStatus(`Tag learned: good=${(out.good_tags || []).length}, bad=${(out.bad_tags || []).length}`);
+    onStatus(`标签学习完成：好标签=${(out.good_tags || []).length}，坏标签=${(out.bad_tags || []).length}`);
     await viewEvidence(itemType, itemId);
   }
 
@@ -97,26 +103,26 @@ export function PolicySuggestionsPanel({ baseUrl, bookId, onStatus, onOpenTrace 
 
   return (
     <div className="card" style={{ marginTop: 10, position: "relative", overflow: "hidden" }}>
-      <div className="h2">Policy Suggestions Sidebar</div>
+      <div className="h2">策略建议侧栏</div>
       <div className="row" style={{ gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-        <button onClick={() => void generate()} disabled={!bookId}>Generate</button>
-        <button onClick={() => void load("pending")} disabled={!bookId}>Pending</button>
-        <button onClick={() => void load("accepted")} disabled={!bookId}>Accepted</button>
-        <button onClick={() => void load("rejected")} disabled={!bookId}>Rejected</button>
-        <div className="small mono">scope={scope} · count={proposals.length} {loading ? "· loading..." : ""}</div>
+        <button onClick={() => void generate()} disabled={!bookId}>生成建议</button>
+        <button onClick={() => void load("pending")} disabled={!bookId}>待处理</button>
+        <button onClick={() => void load("accepted")} disabled={!bookId}>已接受</button>
+        <button onClick={() => void load("rejected")} disabled={!bookId}>已拒绝</button>
+        <div className="small mono">范围(scope)={formatScope(scope)} · 数量={proposals.length} {loading ? "· 加载中..." : ""}</div>
       </div>
       <div className="scroll" style={{ maxHeight: 300, marginTop: 8, paddingRight: drawerOpen ? 390 : 0 }}>
         {proposals.length === 0 ? (
-          <div className="hint">No proposals.</div>
+          <div className="hint">暂无建议。</div>
         ) : (
           <table className="compare-table">
             <thead>
               <tr>
-                <th>action</th>
-                <th>item</th>
-                <th>expected_gain</th>
-                <th>expected_risk</th>
-                <th>ops</th>
+                <th>策略</th>
+                <th>对象</th>
+                <th>预期增益</th>
+                <th>预期风险</th>
+                <th>操作</th>
               </tr>
             </thead>
             <tbody>
@@ -137,16 +143,16 @@ export function PolicySuggestionsPanel({ baseUrl, bookId, onStatus, onOpenTrace 
                             void viewEvidence(String(p.item_type || ""), String(p.item_id || ""));
                           }}
                         >
-                          Evidence
+                          查看证据
                         </button>
-                        <button onClick={() => void learnTags(String(p.item_type || ""), String(p.item_id || ""))}>Learn Tags</button>
+                        <button onClick={() => void learnTags(String(p.item_type || ""), String(p.item_id || ""))}>学习标签</button>
                         {String(p.status || "") === "pending" ? (
                           <>
-                            <button onClick={() => void accept(String(p.proposal_id || ""))}>Accept</button>
-                            <button onClick={() => void reject(String(p.proposal_id || ""))}>Reject</button>
+                            <button onClick={() => void accept(String(p.proposal_id || ""))}>接受</button>
+                            <button onClick={() => void reject(String(p.proposal_id || ""))}>拒绝</button>
                           </>
                         ) : (
-                          <span className="small mono">{String(p.status || "-")}</span>
+                          <span className="small mono">{formatScope(String(p.status || "-"))}</span>
                         )}
                       </div>
                     </td>
@@ -174,40 +180,40 @@ export function PolicySuggestionsPanel({ baseUrl, bookId, onStatus, onOpenTrace 
           }}
         >
           <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
-            <div className="h2">Evidence Drawer</div>
-            <button onClick={() => setDrawerOpen(false)}>Close</button>
+            <div className="h2">证据抽屉</div>
+            <button onClick={() => setDrawerOpen(false)}>关闭</button>
           </div>
           {!evidence ? (
-            <div className="hint">Select a proposal and click Evidence.</div>
+            <div className="hint">请选择建议并点击“查看证据”。</div>
           ) : (
             <>
               <div className="small mono">
-                {String(evidence?.item?.item_type || "")}:{String(evidence?.item?.item_id || "").slice(0, 8)} · policy={String(evidence?.item?.policy || "-")}
+                {String(evidence?.item?.item_type || "")}:{String(evidence?.item?.item_id || "").slice(0, 8)} · 策略(policy)={String(evidence?.item?.policy || "-")}
               </div>
-              <div className="small">title: {String(evidence?.item?.title || "-")}</div>
-              <div className="small">good_tags: <span className="mono">{JSON.stringify(evidence?.item?.good_tags || [])}</span></div>
-              <div className="small">bad_tags: <span className="mono">{JSON.stringify(evidence?.item?.bad_tags || [])}</span></div>
+              <div className="small">标题：{String(evidence?.item?.title || "-")}</div>
+              <div className="small">好标签：<span className="mono">{JSON.stringify(evidence?.item?.good_tags || [])}</span></div>
+              <div className="small">坏标签：<span className="mono">{JSON.stringify(evidence?.item?.bad_tags || [])}</span></div>
               <div className="row" style={{ gap: 6, marginTop: 8 }}>
                 <button
                   onClick={() => {
                     const tv = String((evidence?.samples || [])[0]?.text_ver_id || "");
                     if (!tv) return;
                     onOpenTrace(tv);
-                    onStatus(`Jumped to trace: ${tv.slice(0, 8)}`);
+                    onStatus(`已跳转追踪：${tv.slice(0, 8)}`);
                   }}
                   disabled={!String((evidence?.samples || [])[0]?.text_ver_id || "")}
                 >
-                  Jump Latest Trace
+                  跳转最近追踪
                 </button>
               </div>
               <div className="scroll" style={{ maxHeight: 220, marginTop: 6 }}>
                 <table className="compare-table">
                   <thead>
                     <tr>
-                      <th>delta</th>
-                      <th>rank</th>
-                      <th>filtered</th>
-                      <th>trace</th>
+                      <th>变化量</th>
+                      <th>排序</th>
+                      <th>过滤原因</th>
+                      <th>追踪</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -220,11 +226,11 @@ export function PolicySuggestionsPanel({ baseUrl, bookId, onStatus, onOpenTrace 
                           <button
                             onClick={() => {
                               onOpenTrace(String(s.text_ver_id || ""));
-                              onStatus(`Jumped to trace: ${String(s.text_ver_id || "").slice(0, 8)}`);
+                              onStatus(`已跳转追踪：${String(s.text_ver_id || "").slice(0, 8)}`);
                             }}
                             disabled={!s.text_ver_id}
                           >
-                            Open Trace
+                            打开追踪
                           </button>
                         </td>
                       </tr>
@@ -233,7 +239,7 @@ export function PolicySuggestionsPanel({ baseUrl, bookId, onStatus, onOpenTrace 
                 </table>
               </div>
               <div className="small" style={{ marginTop: 6 }}>
-                diagnosis: <span className="mono">{String(evidence?.diagnosis?.recommendation || "-")}</span> ({String(evidence?.diagnosis?.confidence ?? "-")})
+                诊断：<span className="mono">{String(evidence?.diagnosis?.recommendation || "-")}</span> ({String(evidence?.diagnosis?.confidence ?? "-")})
               </div>
               <pre style={{ maxHeight: 160, overflow: "auto", marginTop: 6 }}>
                 {JSON.stringify(evidence?.diagnosis?.signals || [], null, 2)}

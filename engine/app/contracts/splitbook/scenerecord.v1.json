@@ -1,0 +1,240 @@
+﻿{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schema/scenerecord.v1.json",
+  "title": "SceneRecordV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "scene_key",
+    "chapter_no",
+    "scene_no",
+    "events",
+    "world_facts",
+    "artifacts",
+    "conflict",
+    "foreshadow_candidates",
+    "payoff_candidates"
+  ],
+  "properties": {
+    "scene_key": { "type": "string" },
+    "chapter_no": { "type": "integer", "minimum": 0 },
+    "scene_no": { "type": "integer", "minimum": 0 },
+    "events": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "beat",
+          "what",
+          "cause",
+          "result",
+          "tension_score",
+          "importance",
+          "confidence",
+          "evidence"
+        ],
+        "properties": {
+          "beat": { "type": "string" },
+          "what": { "type": "string" },
+          "cause": { "type": "string" },
+          "result": { "type": "string" },
+          "tension_score": { "type": "integer", "minimum": 0, "maximum": 10 },
+          "importance": { "type": "integer", "minimum": 0, "maximum": 3 },
+          "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+          "evidence": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        }
+      }
+    },
+    "world_facts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "fact_type",
+          "subject",
+          "predicate",
+          "object",
+          "constraints",
+          "cost_or_risk",
+          "importance",
+          "confidence",
+          "evidence",
+          "entity_tags"
+        ],
+        "properties": {
+          "fact_type": {
+            "type": "string",
+            "enum": [
+              "pathway",
+              "sequence",
+              "potion_recipe",
+              "ritual",
+              "rule",
+              "warning",
+              "pollution",
+              "organization",
+              "artifact",
+              "ability",
+              "other"
+            ]
+          },
+          "subject": { "type": "string" },
+          "predicate": { "type": "string" },
+          "object": { "type": "string" },
+          "constraints": { "type": "string" },
+          "cost_or_risk": { "type": "string" },
+          "importance": { "type": "integer", "minimum": 0, "maximum": 3 },
+          "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+          "evidence": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "entity_tags": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "type",
+          "effect",
+          "risk_or_cost",
+          "owner_or_source",
+          "importance",
+          "confidence",
+          "evidence"
+        ],
+        "properties": {
+          "name": { "type": "string" },
+          "type": { "type": "string" },
+          "effect": { "type": "string" },
+          "risk_or_cost": { "type": "string" },
+          "owner_or_source": { "type": "string" },
+          "importance": { "type": "integer", "minimum": 0, "maximum": 3 },
+          "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+          "evidence": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        }
+      }
+    },
+    "conflict": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "side_a_goal",
+        "side_b_goal",
+        "stakes",
+        "escalation",
+        "turning_point",
+        "outcome",
+        "tension_score",
+        "confidence",
+        "evidence"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "man_vs_man",
+            "man_vs_self",
+            "man_vs_world",
+            "man_vs_system",
+            "man_vs_unknown",
+            "none"
+          ]
+        },
+        "side_a_goal": { "type": "string" },
+        "side_b_goal": { "type": "string" },
+        "stakes": { "type": "string" },
+        "escalation": { "type": "string" },
+        "turning_point": { "type": "string" },
+        "outcome": { "type": "string" },
+        "tension_score": { "type": "integer", "minimum": 0, "maximum": 10 },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "evidence": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "foreshadow_candidates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "seed",
+          "why",
+          "promise",
+          "importance",
+          "confidence",
+          "entity_tags",
+          "evidence"
+        ],
+        "properties": {
+          "seed": { "type": "string" },
+          "why": { "type": "string" },
+          "promise": { "type": "string" },
+          "importance": { "type": "integer", "minimum": 0, "maximum": 3 },
+          "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+          "entity_tags": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "evidence": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        }
+      }
+    },
+    "payoff_candidates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "payoff",
+          "trigger",
+          "effect",
+          "resolves",
+          "importance",
+          "confidence",
+          "entity_tags",
+          "evidence"
+        ],
+        "properties": {
+          "payoff": { "type": "string" },
+          "trigger": { "type": "string" },
+          "effect": { "type": "string" },
+          "resolves": { "type": "string" },
+          "importance": { "type": "integer", "minimum": 0, "maximum": 3 },
+          "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+          "entity_tags": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "evidence": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        }
+      }
+    }
+  }
+}

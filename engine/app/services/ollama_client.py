@@ -245,18 +245,52 @@ class OllamaClient:
         retries: int = 2,
         meta: dict[str, Any] | None = None,
     ) -> list[list[float]]:
-        vectors: list[list[float]] = []
-        for idx, text_value in enumerate(texts):
-            base_meta = dict(meta or {})
-            base_meta.update({"model": model, "text_chars": len(text_value or ""), "text_hash": _sha1_short(text_value or ""), "segment_index": idx})
-            last_error: ClientError | None = None
+        texts = [str(x or "") for x in (texts or [])]
+        if not texts:
+            return []
+
+        def _normalize_vectors(data: Any, expected: int, meta_try: dict[str, Any]) -> list[list[float]]:
+            if not isinstance(data, dict):
+                raise EmbedFailed("EMBED_FAILED", "invalid embed response payload", meta_try)
+            raw = data.get("embeddings")
+            if raw is None:
+                one = data.get("embedding")
+                if isinstance(one, list) and one and all(isinstance(v, (int, float)) for v in one):
+                    raw = [one]
+            if not isinstance(raw, list) or len(raw) == 0:
+                raise EmbedFailed("EMBED_FAILED", "empty embedding list", meta_try)
+            out: list[list[float]] = []
+            for vec in raw:
+                if not isinstance(vec, list) or len(vec) == 0:
+                    raise EmbedFailed("EMBED_FAILED", "invalid embedding vector", meta_try)
+                casted = [float(v) for v in vec]
+                out.append(casted)
+            if len(out) != expected:
+                raise EmbedFailed(
+                    "EMBED_FAILED",
+                    f"embedding count mismatch expected={expected} got={len(out)}",
+                    meta_try,
+                )
+            return out
+
+        base_meta = dict(meta or {})
+        base_meta.update(
+            {
+                "model": model,
+                "batch_size": len(texts),
+                "batch_chars": sum(len(t) for t in texts),
+            }
+        )
+        last_error: ClientError | None = None
+        fallback_single = False
+
+        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_s, connect=3.0)) as client:
             for attempt in range(1, retries + 2):
                 t0 = time.perf_counter()
-                meta_try = {**base_meta, "attempt": attempt}
-                logger.info("ollama.embed.start", extra={"meta": meta_try, **meta_try})
+                meta_try = {**base_meta, "attempt": attempt, "endpoint": "/api/embed"}
+                logger.info("ollama.embed.batch.start", extra={"meta": meta_try, **meta_try})
                 try:
-                    async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_s, connect=3.0)) as client:
-                        resp = await client.post(f"{self.base_url}/api/embeddings", json={"model": model, "prompt": text_value})
+                    resp = await client.post(f"{self.base_url}/api/embed", json={"model": model, "input": texts})
                 except httpx.ConnectError as exc:
                     last_error = OllamaUnavailable("OLLAMA_UNAVAILABLE", "connection error", {**meta_try, "err": str(exc)})
                 except httpx.ConnectTimeout as exc:
@@ -264,11 +298,11 @@ class OllamaClient:
                 except httpx.ReadTimeout as exc:
                     last_error = LLMTimeout("LLM_TIMEOUT", "read timeout", {**meta_try, "err": str(exc)})
                 except Exception as exc:
-                    last_error = EmbedFailed("EMBED_FAILED", "unexpected embed client error", {**meta_try, "err": str(exc)})
+                    last_error = EmbedFailed("EMBED_FAILED", "unexpected embed batch client error", {**meta_try, "err": str(exc)})
 
                 if last_error:
                     latency = int((time.perf_counter() - t0) * 1000)
-                    logger.warning("ollama.embed.fail", extra={"meta": {**last_error.meta, "latency_ms": latency}, **meta_try})
+                    logger.warning("ollama.embed.batch.fail", extra={"meta": {**last_error.meta, "latency_ms": latency}, **meta_try})
                     if last_error.code in {"OLLAMA_UNAVAILABLE", "LLM_TIMEOUT", "OLLAMA_5XX"} and attempt <= retries:
                         await _sleep_backoff(attempt)
                         continue
@@ -276,9 +310,13 @@ class OllamaClient:
 
                 latency = int((time.perf_counter() - t0) * 1000)
                 assert resp is not None
+                if resp.status_code == 404:
+                    fallback_single = True
+                    logger.info("ollama.embed.batch.fallback_single", extra={"meta": {**meta_try, "latency_ms": latency}, **meta_try})
+                    break
                 if resp.status_code != 200:
                     mapped = _map_status_error(resp.status_code, {**meta_try, "status_code": resp.status_code, "latency_ms": latency})
-                    logger.warning("ollama.embed.http_error", extra={"meta": mapped.meta, **meta_try})
+                    logger.warning("ollama.embed.batch.http_error", extra={"meta": mapped.meta, **meta_try})
                     if mapped.code == "OLLAMA_5XX" and attempt <= retries:
                         await _sleep_backoff(attempt)
                         continue
@@ -286,19 +324,90 @@ class OllamaClient:
 
                 try:
                     data = resp.json()
-                    vec = data.get("embedding")
+                    vectors = _normalize_vectors(data, len(texts), meta_try)
+                except ClientError:
+                    raise
                 except Exception as exc:
-                    raise EmbedFailed("EMBED_FAILED", "invalid response json", {**meta_try, "err": str(exc)})
+                    raise EmbedFailed("EMBED_FAILED", "invalid embed batch response json", {**meta_try, "err": str(exc)})
 
-                if not isinstance(vec, list) or len(vec) == 0:
-                    raise EmbedFailed("EMBED_FAILED", "empty embedding", meta_try)
+                logger.info(
+                    "ollama.embed.batch.ok",
+                    extra={
+                        "meta": {
+                            **meta_try,
+                            "latency_ms": latency,
+                            "count": len(vectors),
+                            "dim": len(vectors[0]) if vectors else 0,
+                        },
+                        **meta_try,
+                    },
+                )
+                return vectors
 
-                logger.info("ollama.embed.ok", extra={"meta": {**meta_try, "latency_ms": latency, "dim": len(vec)}, **meta_try})
-                vectors.append(vec)
-                break
-            else:
-                raise last_error or EmbedFailed("EMBED_FAILED", "unknown embedding failure", base_meta)
-        return vectors
+            if not fallback_single:
+                raise last_error or EmbedFailed("EMBED_FAILED", "unknown embedding batch failure", base_meta)
+
+            vectors: list[list[float]] = []
+            for idx, text_value in enumerate(texts):
+                per_meta = {
+                    "model": model,
+                    "text_chars": len(text_value or ""),
+                    "text_hash": _sha1_short(text_value or ""),
+                    "segment_index": idx,
+                    "endpoint": "/api/embeddings",
+                }
+                last_error = None
+                for attempt in range(1, retries + 2):
+                    t0 = time.perf_counter()
+                    meta_try = {**per_meta, "attempt": attempt}
+                    logger.info("ollama.embed.single.start", extra={"meta": meta_try, **meta_try})
+                    try:
+                        resp = await client.post(f"{self.base_url}/api/embeddings", json={"model": model, "prompt": text_value})
+                    except httpx.ConnectError as exc:
+                        last_error = OllamaUnavailable("OLLAMA_UNAVAILABLE", "connection error", {**meta_try, "err": str(exc)})
+                    except httpx.ConnectTimeout as exc:
+                        last_error = OllamaUnavailable("OLLAMA_UNAVAILABLE", "connect timeout", {**meta_try, "err": str(exc)})
+                    except httpx.ReadTimeout as exc:
+                        last_error = LLMTimeout("LLM_TIMEOUT", "read timeout", {**meta_try, "err": str(exc)})
+                    except Exception as exc:
+                        last_error = EmbedFailed("EMBED_FAILED", "unexpected embed client error", {**meta_try, "err": str(exc)})
+
+                    if last_error:
+                        latency = int((time.perf_counter() - t0) * 1000)
+                        logger.warning("ollama.embed.single.fail", extra={"meta": {**last_error.meta, "latency_ms": latency}, **meta_try})
+                        if last_error.code in {"OLLAMA_UNAVAILABLE", "LLM_TIMEOUT", "OLLAMA_5XX"} and attempt <= retries:
+                            await _sleep_backoff(attempt)
+                            continue
+                        raise last_error
+
+                    latency = int((time.perf_counter() - t0) * 1000)
+                    assert resp is not None
+                    if resp.status_code != 200:
+                        mapped = _map_status_error(resp.status_code, {**meta_try, "status_code": resp.status_code, "latency_ms": latency})
+                        logger.warning("ollama.embed.single.http_error", extra={"meta": mapped.meta, **meta_try})
+                        if mapped.code == "OLLAMA_5XX" and attempt <= retries:
+                            await _sleep_backoff(attempt)
+                            continue
+                        raise mapped
+
+                    try:
+                        data = resp.json()
+                        vec = data.get("embedding")
+                    except Exception as exc:
+                        raise EmbedFailed("EMBED_FAILED", "invalid response json", {**meta_try, "err": str(exc)})
+
+                    if not isinstance(vec, list) or len(vec) == 0:
+                        raise EmbedFailed("EMBED_FAILED", "empty embedding", meta_try)
+                    casted = [float(v) for v in vec]
+                    logger.info(
+                        "ollama.embed.single.ok",
+                        extra={"meta": {**meta_try, "latency_ms": latency, "dim": len(casted)}, **meta_try},
+                    )
+                    vectors.append(casted)
+                    break
+                else:
+                    raise last_error or EmbedFailed("EMBED_FAILED", "unknown embedding failure", per_meta)
+            return vectors
 
 
 async def _sleep_backoff(attempt: int) -> None:

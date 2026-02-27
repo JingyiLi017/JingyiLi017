@@ -1,0 +1,50 @@
+﻿{
+    "started_at":  "2026-02-25T21:50:54.2105205+09:00",
+    "base":  "http://127.0.0.1:17777",
+    "api_prefix":  "/v1",
+    "ok":  true,
+    "steps":  {
+                  "core_verify":  {
+                                      "ok":  true,
+                                      "command":  "npm run verify:core",
+                                      "exit_code":  0,
+                                      "elapsed_ms":  19232.3,
+                                      "message":  "",
+                                      "at":  "2026-02-25T21:51:13.5086751+09:00"
+                                  },
+                  "engine_health":  {
+                                        "ok":  true,
+                                        "command":  "GET http://127.0.0.1:17777/v1/health",
+                                        "exit_code":  0,
+                                        "elapsed_ms":  2291.8,
+                                        "message":  "status=200（第 1/6 次）",
+                                        "at":  "2026-02-25T21:51:15.8208170+09:00"
+                                    },
+                  "splitbook_state_verify":  {
+                                                 "ok":  true,
+                                                 "command":  "npm run verify:splitbook-state",
+                                                 "exit_code":  0,
+                                                 "elapsed_ms":  11131.1,
+                                                 "message":  "",
+                                                 "at":  "2026-02-25T21:51:26.9528857+09:00"
+                                             },
+                  "api_contract_verify":  {
+                                              "ok":  true,
+                                              "command":  "powershell -File scripts/verify_api_contract.ps1 -Base http://127.0.0.1:17777 -ApiPrefix /v1",
+                                              "exit_code":  0,
+                                              "elapsed_ms":  12146,
+                                              "message":  "",
+                                              "at":  "2026-02-25T21:51:39.1014098+09:00"
+                                          },
+                  "desktop_smart_pipeline_smoke":  {
+                                                       "ok":  true,
+                                                       "command":  "skipped",
+                                                       "exit_code":  0,
+                                                       "elapsed_ms":  0,
+                                                       "message":  "skip by flag",
+                                                       "at":  "2026-02-25T21:51:39.1014098+09:00"
+                                                   }
+              },
+    "error":  null,
+    "finished_at":  "2026-02-25T21:51:39.1034139+09:00"
+}

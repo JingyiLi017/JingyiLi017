@@ -72,7 +72,7 @@ export function PreflightFixWizardPanel({ bookId, volumeId, onStatus }: Props) {
         pack_name: packName,
       });
       setPreflightOut(out || {});
-      onStatus?.("Preflight completed");
+      onStatus?.("预检完成");
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -99,7 +99,7 @@ export function PreflightFixWizardPanel({ bookId, volumeId, onStatus }: Props) {
         if (id) map[id] = false;
       }
       setSelectedFixes(map);
-      onStatus?.(`Fix plan generated: ${Object.keys(map).length}`);
+      onStatus?.(`修复方案已生成：${Object.keys(map).length}`);
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -113,7 +113,7 @@ export function PreflightFixWizardPanel({ bookId, volumeId, onStatus }: Props) {
       .filter(([, ok]) => ok)
       .map(([fix_id]) => ({ fix_id }));
     if (!picked.length) {
-      setErr("No fix selected");
+      setErr("尚未选择修复项");
       return;
     }
     setBusy("execute");
@@ -127,7 +127,7 @@ export function PreflightFixWizardPanel({ bookId, volumeId, onStatus }: Props) {
         selected_fixes: picked,
       });
       setFixExecOut(out || {});
-      onStatus?.(`Fixes executed: ${picked.length}`);
+      onStatus?.(`已执行修复项：${picked.length}`);
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -145,7 +145,7 @@ export function PreflightFixWizardPanel({ bookId, volumeId, onStatus }: Props) {
         volume_id: volumeId,
       });
       setFixRecheckOut(out || {});
-      onStatus?.("Fix recheck completed");
+      onStatus?.("修复复检完成");
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -163,7 +163,7 @@ export function PreflightFixWizardPanel({ bookId, volumeId, onStatus }: Props) {
         volume_id: volumeId || undefined,
       });
       setFixRollbackOut(out || {});
-      onStatus?.("Fix rollback completed");
+      onStatus?.("修复回滚完成");
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -183,7 +183,7 @@ export function PreflightFixWizardPanel({ bookId, volumeId, onStatus }: Props) {
       });
       setChainsOut(out || {});
       const count = Array.isArray(out?.items) ? out.items.length : Array.isArray(out?.chains) ? out.chains.length : 0;
-      onStatus?.(`Loaded chains: ${count}`);
+      onStatus?.(`已加载链路：${count}`);
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -200,7 +200,7 @@ export function PreflightFixWizardPanel({ bookId, volumeId, onStatus }: Props) {
         chain_id: chainId,
       });
       setFixRollbackOut(out || {});
-      onStatus?.(`Chain rollback completed: ${chainId}`);
+      onStatus?.(`链路回滚完成：${chainId}`);
       await loadChains();
     } catch (e: any) {
       setErr(String(e?.message || e));
@@ -211,29 +211,29 @@ export function PreflightFixWizardPanel({ bookId, volumeId, onStatus }: Props) {
 
   return (
     <section className="wb-panel" style={{ minHeight: "auto", marginBottom: 10 }}>
-      <h3>Preflight + Fix Wizard</h3>
+      <h3>预检与修复向导</h3>
       <div className="row" style={{ gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
         <label>
-          pack_name
+          包名
           <input value={packName} onChange={(e) => setPackName(e.target.value)} />
         </label>
         <button onClick={() => void runPreflight()} disabled={!bookId || !volumeId || !!busy}>
-          {busy === "preflight" ? "Running..." : "Run Preflight"}
+          {busy === "preflight" ? "执行中..." : "运行预检"}
         </button>
         <button onClick={() => void planFixes()} disabled={!bookId || !volumeId || !!busy}>
-          {busy === "plan" ? "Planning..." : "Plan Fixes"}
+          {busy === "plan" ? "规划中..." : "生成修复方案"}
         </button>
         <button onClick={() => void executeSelected()} disabled={!!busy || fixes.length === 0}>
-          {busy === "execute" ? "Executing..." : "Execute Selected"}
+          {busy === "execute" ? "执行中..." : "执行已选修复"}
         </button>
         <button onClick={() => void recheck()} disabled={!bookId || !volumeId || !!busy}>
-          {busy === "recheck" ? "Rechecking..." : "Recheck"}
+          {busy === "recheck" ? "复检中..." : "复检"}
         </button>
         <button onClick={() => void rollbackLast()} disabled={!bookId || !!busy}>
-          {busy === "rollback" ? "Rolling back..." : "Rollback Last Chain"}
+          {busy === "rollback" ? "回滚中..." : "回滚最近链路"}
         </button>
         <button onClick={() => void loadChains()} disabled={!bookId || !!busy}>
-          {busy === "chains" ? "Loading..." : "Load Chains"}
+          {busy === "chains" ? "加载中..." : "加载链路"}
         </button>
       </div>
       {err ? <div className="hint" style={{ color: "#7f1d1d", marginTop: 8 }}>{err}</div> : null}
@@ -252,10 +252,10 @@ export function PreflightFixWizardPanel({ bookId, volumeId, onStatus }: Props) {
                   />
                   <strong>{String(fx?.title || id)}</strong>
                   <span className="badge">{String(fx?.type || "-")}</span>
-                  <span className="small">risk={String(fx?.risk || "-")}</span>
-                  <span className="small">target={String(fx?.target || "-")}</span>
+                  <span className="small">风险={String(fx?.risk || "-")}</span>
+                  <span className="small">目标={String(fx?.target || "-")}</span>
                 </div>
-                {effects.length ? <div className="small" style={{ marginTop: 4 }}>expected: {effects.join(" | ")}</div> : null}
+                {effects.length ? <div className="small" style={{ marginTop: 4 }}>预期效果：{effects.join(" | ")}</div> : null}
               </div>
             );
           })}
@@ -263,23 +263,24 @@ export function PreflightFixWizardPanel({ bookId, volumeId, onStatus }: Props) {
       ) : null}
       <div className="job-grid" style={{ marginTop: 8 }}>
         <div>
-          <div className="small">preflight</div>
+          <div className="small">预检结果</div>
           <pre>{JSON.stringify(preflightOut, null, 2)}</pre>
         </div>
         <div>
-          <div className="small">fix plan</div>
+          <div className="small">修复方案</div>
           <pre>{JSON.stringify(fixPlanOut, null, 2)}</pre>
         </div>
       </div>
       <div className="job-grid" style={{ marginTop: 8 }}>
         <div>
-          <div className="small">execute</div>
+          <div className="small">执行结果</div>
           {executedFixes.length > 0 ? (
             <div className="scroll" style={{ maxHeight: 220, marginBottom: 8 }}>
               {executedFixes.map((ex, idx) => {
                 const rollbackSupported = Boolean(ex?.rollback?.supported);
                 const hasAgentAudit = Array.isArray(ex?.audit_ids) ? ex.audit_ids.length > 0 : Boolean(ex?.audit_id);
                 const source = hasAgentAudit ? "agent" : ex?.state_audit_id ? "proxy" : "none";
+                const sourceLabel = source === "agent" ? "智能体(agent)" : source === "proxy" ? "代理(proxy)" : "无(none)";
                 const sourceColor = source === "agent" ? "#065f46" : source === "proxy" ? "#92400e" : "#7f1d1d";
                 const rbColor = rollbackSupported ? "#065f46" : "#7f1d1d";
                 return (
@@ -287,29 +288,29 @@ export function PreflightFixWizardPanel({ bookId, volumeId, onStatus }: Props) {
                     <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
                       <strong>{String(ex?.fix_id || "-")}</strong>
                       <span className="badge">{String(ex?.status || "-")}</span>
-                      <span className="small">type={String(ex?.type || "-")}</span>
+                      <span className="small">类型(type)={String(ex?.type || "-")}</span>
                     </div>
                     <div className="row" style={{ gap: 8, flexWrap: "wrap", marginTop: 4 }}>
                       <span className="small" style={{ color: sourceColor }}>
-                        audit_source={source}
+                        审计来源(audit_source)={sourceLabel}
                       </span>
                       <span className="small" style={{ color: rbColor }}>
-                        rollback={rollbackSupported ? "available" : "unavailable"}
+                        回滚={rollbackSupported ? "可用" : "不可用"}
                       </span>
-                      <span className="small">kind={String(ex?.rollback?.kind || "-")}</span>
+                      <span className="small">回滚类型(kind)={String(ex?.rollback?.kind || "-")}</span>
                     </div>
                     {hasAgentAudit ? (
                       <div className="small" style={{ marginTop: 2 }}>
-                        audit_ids={JSON.stringify(ex?.audit_ids && ex.audit_ids.length ? ex.audit_ids : [ex?.audit_id])}
+                        审计ID(audit_ids)={JSON.stringify(ex?.audit_ids && ex.audit_ids.length ? ex.audit_ids : [ex?.audit_id])}
                       </div>
                     ) : ex?.state_audit_id ? (
                       <div className="small" style={{ marginTop: 2 }}>
-                        proxy_state_audit_id={String(ex.state_audit_id)}
+                        代理审计ID(proxy_state_audit_id)={String(ex.state_audit_id)}
                       </div>
                     ) : null}
                     {ex?.rollback?.reason || ex?.reason ? (
                       <div className="small" style={{ marginTop: 2 }}>
-                        reason={String(ex?.rollback?.reason || ex?.reason)}
+                        原因(reason)={String(ex?.rollback?.reason || ex?.reason)}
                       </div>
                     ) : null}
                   </div>
@@ -320,16 +321,16 @@ export function PreflightFixWizardPanel({ bookId, volumeId, onStatus }: Props) {
           <pre>{JSON.stringify(fixExecOut, null, 2)}</pre>
         </div>
         <div>
-          <div className="small">recheck</div>
+          <div className="small">复检结果</div>
           <pre>{JSON.stringify(fixRecheckOut, null, 2)}</pre>
         </div>
       </div>
       <div style={{ marginTop: 8 }}>
-        <div className="small">rollback</div>
+        <div className="small">回滚结果</div>
         <pre>{JSON.stringify(fixRollbackOut, null, 2)}</pre>
       </div>
       <div style={{ marginTop: 8 }}>
-        <div className="small">chains</div>
+        <div className="small">链路记录</div>
         {chains.length > 0 ? (
           <div className="scroll" style={{ maxHeight: 220 }}>
             {chains.map((c) => {
@@ -338,16 +339,16 @@ export function PreflightFixWizardPanel({ bookId, volumeId, onStatus }: Props) {
                 <div key={id} className="issue-item">
                   <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
                     <strong>{id}</strong>
-                    <span className="badge">status={String(c.status || "-")}</span>
-                    <span className="small">exec={Number(c.executed_count || 0)}</span>
-                    <span className="small">ok={Number(c.ok_count || 0)}</span>
-                    <span className="small">rollbackable={String(Boolean(c.has_rollbackable))}</span>
-                    {c.pack_name ? <span className="small">pack={String(c.pack_name)}</span> : null}
+                    <span className="badge">状态(status)={String(c.status || "-")}</span>
+                    <span className="small">执行数(exec)={Number(c.executed_count || 0)}</span>
+                    <span className="small">成功(ok)={Number(c.ok_count || 0)}</span>
+                    <span className="small">可回滚(rollbackable)={String(Boolean(c.has_rollbackable))}</span>
+                    {c.pack_name ? <span className="small">包名(pack)={String(c.pack_name)}</span> : null}
                   </div>
                   <div className="row" style={{ gap: 8, flexWrap: "wrap", marginTop: 4 }}>
                     <span className="small">{String(c.created_at || "")}</span>
                     <button onClick={() => void rollbackChain(id)} disabled={!!busy}>
-                      {busy === "rollback-chain" ? "Rolling back..." : "Rollback This Chain"}
+                      {busy === "rollback-chain" ? "回滚中..." : "回滚该链路"}
                     </button>
                   </div>
                 </div>

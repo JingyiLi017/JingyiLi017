@@ -1,0 +1,259 @@
+﻿{
+    "base":  "http://127.0.0.1:17777",
+    "api_prefix":  "/v1",
+    "ok":  true,
+    "artifacts":  {
+                      "temp_file":  "G:\\vscode workstation\\workspace_test\\\\splitbook_state_verify\\verify_splitbook_20260225_215119.txt",
+                      "created_splitbook_id":  "4c899972-e6ab-48ef-ad41-6e68667c988f"
+                  },
+    "steps":  {
+                  "jobs_queued_list_available":  {
+                                                     "ok":  true,
+                                                     "message":  "queued_count=0",
+                                                     "skipped":  false,
+                                                     "data":  null,
+                                                     "at":  "2026-02-25T21:51:20.4919709+09:00"
+                                                 },
+                  "create_splitbook":  {
+                                           "ok":  true,
+                                           "message":  "4c899972-e6ab-48ef-ad41-6e68667c988f",
+                                           "skipped":  false,
+                                           "data":  null,
+                                           "at":  "2026-02-25T21:51:19.4981919+09:00"
+                                       },
+                  "embed_cancel_consistent":  {
+                                                  "ok":  true,
+                                                  "message":  "job=canceled, splitbook=canceled",
+                                                  "skipped":  false,
+                                                  "data":  {
+                                                               "cancel_response":  {
+                                                                                       "ok":  true,
+                                                                                       "status":  "canceled"
+                                                                                   },
+                                                               "splitbook":  {
+                                                                                 "splitbook_id":  "4c899972-e6ab-48ef-ad41-6e68667c988f",
+                                                                                 "name":  "ç¶æä¸è´æ§åå½-20260225_215119",
+                                                                                 "author":  "qa",
+                                                                                 "source_path":  "G:\\vscode workstation\\workspace_test\\\\splitbook_state_verify\\verify_splitbook_20260225_215119.txt",
+                                                                                 "note":  "auto verify",
+                                                                                 "ingest_status":  "done",
+                                                                                 "embed_status":  "canceled",
+                                                                                 "allow_guard":  true,
+                                                                                 "stats":  {
+                                                                                               "overlap":  140,
+                                                                                               "encoding":  "utf-8-sig",
+                                                                                               "chars_read":  86400,
+                                                                                               "chunk_size":  700,
+                                                                                               "chunks_total":  156,
+                                                                                               "auto_optimize":  true,
+                                                                                               "chapter_total":  0,
+                                                                                               "embedded_total":  0,
+                                                                                               "paragraph_total":  1,
+                                                                                               "embed_progress_pct":  0
+                                                                                           },
+                                                                                 "created_at":  "2026-02-25T12:51:19.466905Z",
+                                                                                 "updated_at":  "2026-02-25T12:51:24.859398Z"
+                                                                             },
+                                                               "job":  {
+                                                                           "job_id":  "ca56fbb7-4c02-4ad0-93cb-b8ced9a6f47c",
+                                                                           "book_id":  null,
+                                                                           "chapter_id":  null,
+                                                                           "job_type":  "SPLITBOOK_EMBED_V1",
+                                                                           "capability_id":  "splitbook.embed.v1",
+                                                                           "status":  "canceled",
+                                                                           "stage":  "CANCELED",
+                                                                           "progress_value":  0.10000000149011612,
+                                                                           "progress":  {
+                                                                                            "pct":  10,
+                                                                                            "phase":  "LOAD",
+                                                                                            "message":  "å è½½åå",
+                                                                                            "counters":  {
+
+                                                                                                         }
+                                                                                        },
+                                                                           "run_id":  null,
+                                                                           "payload":  {
+                                                                                           "batch":  32,
+                                                                                           "force":  false,
+                                                                                           "model":  "bge-m3:latest",
+                                                                                           "output_dir":  null,
+                                                                                           "request_id":  "fe383cfd-4fc3-43c5-aeaa-758d9fcc0e79",
+                                                                                           "splitbook_id":  "4c899972-e6ab-48ef-ad41-6e68667c988f",
+                                                                                           "worker_count":  2,
+                                                                                           "auto_optimize":  true
+                                                                                       },
+                                                                           "result":  {
+
+                                                                                      },
+                                                                           "logs":  [
+                                                                                        "[INFO] [EMBED] model=bge-m3:latest total=156 batch=96 workers=2 auto_optimize=True"
+                                                                                    ],
+                                                                           "error":  null,
+                                                                           "created_at":  "2026-02-25T12:51:20.510327Z",
+                                                                           "updated_at":  "2026-02-25T12:51:24.849230Z",
+                                                                           "book_title":  null,
+                                                                           "chapter_title":  null,
+                                                                           "splitbook_name":  "ç¶æä¸è´æ§åå½-20260225_215119",
+                                                                           "splitbook_author":  "qa",
+                                                                           "splitbook_id":  "4c899972-e6ab-48ef-ad41-6e68667c988f",
+                                                                           "job_book_label":  "ç¶æä¸è´æ§åå½-20260225_215119"
+                                                                       }
+                                                           },
+                                                  "at":  "2026-02-25T21:51:25.0021385+09:00"
+                                              },
+                  "splitbook_delete_effective":  {
+                                                     "ok":  true,
+                                                     "message":  "deleted=True",
+                                                     "skipped":  false,
+                                                     "data":  null,
+                                                     "at":  "2026-02-25T21:51:26.1345734+09:00"
+                                                 },
+                  "embed_resume_condition":  {
+                                                 "ok":  true,
+                                                 "message":  "ingest=done, embed=canceled, active_embed=",
+                                                 "skipped":  false,
+                                                 "data":  null,
+                                                 "at":  "2026-02-25T21:51:25.0794352+09:00"
+                                             },
+                  "ingest_terminal":  {
+                                          "ok":  true,
+                                          "message":  "status=succeeded",
+                                          "skipped":  false,
+                                          "data":  {
+                                                       "job_id":  "b73ae4ee-8020-401f-877d-568959c9dc68",
+                                                       "book_id":  null,
+                                                       "chapter_id":  null,
+                                                       "job_type":  "SPLITBOOK_INGEST_V1",
+                                                       "capability_id":  "splitbook.ingest.v1",
+                                                       "status":  "succeeded",
+                                                       "stage":  "DONE",
+                                                       "progress_value":  1.0,
+                                                       "progress":  {
+                                                                        "pct":  100,
+                                                                        "phase":  "done",
+                                                                        "message":  "å®æ",
+                                                                        "counters":  {
+
+                                                                                     }
+                                                                    },
+                                                       "run_id":  "999df913-85c7-4a54-abdf-3086e7a56c59",
+                                                       "payload":  {
+                                                                       "path":  "G:\\vscode workstation\\workspace_test\\\\splitbook_state_verify\\verify_splitbook_20260225_215119.txt",
+                                                                       "overlap":  140,
+                                                                       "encoding":  "utf-8",
+                                                                       "chunk_size":  700,
+                                                                       "request_id":  "45aa8ede-1dbe-457f-b239-c1bae9ea63f8",
+                                                                       "batch_insert":  300,
+                                                                       "splitbook_id":  "4c899972-e6ab-48ef-ad41-6e68667c988f",
+                                                                       "auto_optimize":  true
+                                                                   },
+                                                       "result":  {
+                                                                      "status":  "done",
+                                                                      "encoding":  "utf-8-sig",
+                                                                      "chars_read":  86400,
+                                                                      "splitbook_id":  "4c899972-e6ab-48ef-ad41-6e68667c988f",
+                                                                      "chunks_written":  156,
+                                                                      "chapters_detected":  0
+                                                                  },
+                                                       "logs":  [
+                                                                    "[INFO] [PREPARE] path=G:\\vscode workstation\\workspace_test\\\\splitbook_state_verify\\verify_splitbook_20260225_215119.txt",
+                                                                    "[INFO] [PREPARE] size_mb=0.24 chunk_size=700 overlap=140 batch_insert=300 auto_optimize=True",
+                                                                    "[INFO] [PREPARE] encoding=utf-8-sig"
+                                                                ],
+                                                       "error":  null,
+                                                       "created_at":  "2026-02-25T12:51:19.516575Z",
+                                                       "updated_at":  "2026-02-25T12:51:19.770219Z",
+                                                       "book_title":  null,
+                                                       "chapter_title":  null,
+                                                       "splitbook_name":  "ç¶æä¸è´æ§åå½-20260225_215119",
+                                                       "splitbook_author":  "qa",
+                                                       "splitbook_id":  "4c899972-e6ab-48ef-ad41-6e68667c988f",
+                                                       "job_book_label":  "ç¶æä¸è´æ§åå½-20260225_215119"
+                                                   },
+                                          "at":  "2026-02-25T21:51:20.4418372+09:00"
+                                      },
+                  "health":  {
+                                 "ok":  true,
+                                 "message":  "health ok @ http://127.0.0.1:17777",
+                                 "skipped":  false,
+                                 "data":  {
+                                              "status":  "ok",
+                                              "checks":  {
+                                                             "postgres":  {
+                                                                              "ok":  true,
+                                                                              "latency_ms":  5
+                                                                          },
+                                                             "pgvector":  {
+                                                                              "ok":  true
+                                                                          },
+                                                             "fts_index":  {
+                                                                               "ok":  true
+                                                                           },
+                                                             "jobs":  {
+                                                                          "running":  0,
+                                                                          "failed_last_24h":  0
+                                                                      },
+                                                             "disk":  {
+                                                                          "ok":  true,
+                                                                          "free_gb":  110.01
+                                                                      },
+                                                             "ollama":  {
+                                                                            "ok":  true,
+                                                                            "models":  [
+                                                                                           "dengcao/bge-reranker-v2-m3:latest",
+                                                                                           "qwen2.5:7b",
+                                                                                           "bge-m3:latest",
+                                                                                           "qwen3:8b",
+                                                                                           "gemma3:12b-it-qat",
+                                                                                           "deepseek-r1:8b",
+                                                                                           "deepseek-r1:14b",
+                                                                                           "deepseek-r1:32b"
+                                                                                       ]
+                                                                        }
+                                                         }
+                                          },
+                                 "at":  "2026-02-25T21:51:19.2127180+09:00"
+                             },
+                  "embed_duplicate_guard":  {
+                                                "ok":  true,
+                                                "message":  "status=409, detail=SPLITBOOK_EMBED_ALREADY_DONE",
+                                                "skipped":  false,
+                                                "data":  {
+                                                             "ok":  false,
+                                                             "body":  {
+                                                                          "detail":  "SPLITBOOK_EMBED_ALREADY_DONE",
+                                                                          "detail_zh":  "该拆书已完成向量化，无需重复执行",
+                                                                          "request_id":  "b10bed2a-94a7-41ef-80ee-26741175ca6e",
+                                                                          "detail_code":  "SPLITBOOK_EMBED_ALREADY_DONE"
+                                                                      },
+                                                             "status":  409,
+                                                             "raw":  "{\"detail\":\"SPLITBOOK_EMBED_ALREADY_DONE\",\"detail_zh\":\"该拆书已完成向量化，无需重复执行\",\"request_id\":\"b10bed2a-94a7-41ef-80ee-26741175ca6e\",\"detail_code\":\"SPLITBOOK_EMBED_ALREADY_DONE\"}"
+                                                         },
+                                                "at":  "2026-02-25T21:51:25.2109443+09:00"
+                                            },
+                  "cleanup_stale_splitbook_jobs":  {
+                                                       "ok":  true,
+                                                       "message":  "active=0, stale=0, resumed=0, canceled=0",
+                                                       "skipped":  false,
+                                                       "data":  {
+                                                                    "stale_count":  0,
+                                                                    "canceled":  [
+
+                                                                                 ],
+                                                                    "resumed":  [
+
+                                                                                ],
+                                                                    "total_active":  0,
+                                                                    "resume_failed":  [
+
+                                                                                      ],
+                                                                    "cancel_failed":  [
+
+                                                                                      ]
+                                                                },
+                                                       "at":  "2026-02-25T21:51:19.3236778+09:00"
+                                                   }
+              },
+    "finished_at":  "2026-02-25T21:51:26.1385916+09:00",
+    "started_at":  "2026-02-25T21:51:16.8766187+09:00"
+}

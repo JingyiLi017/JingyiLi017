@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { DeleteConfirmDialog } from "./DeleteConfirmDialog";
 import { WorkflowRunnerPanel } from "./WorkflowRunnerPanel";
 
 type Props = {
@@ -7,6 +8,17 @@ type Props = {
   onPickBookId?: (bookId: string) => void;
   onPickChapterId?: (chapterId: string) => void;
 };
+
+type CleanupConfirmDialog =
+  | null
+  | {
+      kind: "scope" | "selected";
+      title: string;
+      targetLabel: string;
+      warning: string;
+      expectedText: string;
+      exportIds: string[];
+    };
 
 function asObj(v: any): Record<string, any> {
   return v && typeof v === "object" && !Array.isArray(v) ? v : {};
@@ -39,22 +51,22 @@ function AuditChangeView({ audit }: { audit: any }) {
   return (
     <details>
       <summary className="small">
-        change summary · foreshadow={String(counts.foreshadow ?? foreshadowKeys.length)} · growth=
+        变更概览 · 伏笔={String(counts.foreshadow ?? foreshadowKeys.length)} · 成长=
         {String(counts.growth ?? growthKeys.length)}
       </summary>
       <div className="small" style={{ marginTop: 6 }}>
-        {foreshadowKeys.length ? `foreshadow: ${foreshadowKeys.join(", ")}` : "foreshadow: -"}
+        {foreshadowKeys.length ? `伏笔：${foreshadowKeys.join(", ")}` : "伏笔：-"}
       </div>
       <div className="small">
-        {growthKeys.length ? `growth: ${growthKeys.join(", ")}` : "growth: -"}
+        {growthKeys.length ? `成长：${growthKeys.join(", ")}` : "成长：-"}
       </div>
       <div className="agent-grid" style={{ marginTop: 6 }}>
         <div className="agent-col">
-          <div className="small">before</div>
+          <div className="small">修改前</div>
           <pre className="small">{JSON.stringify({ foreshadow: beforeF, growth: beforeG }, null, 2)}</pre>
         </div>
         <div className="agent-col">
-          <div className="small">after</div>
+          <div className="small">修改后</div>
           <pre className="small">{JSON.stringify({ foreshadow: afterF, growth: afterG }, null, 2)}</pre>
         </div>
       </div>
@@ -94,7 +106,7 @@ function ActionPayloadEditor({
     return (
       <div className="agent-form-grid">
         <label>
-          scope
+          范围（scope）
           <select
             value={scope}
             onChange={(e) =>
@@ -104,13 +116,13 @@ function ActionPayloadEditor({
               })
             }
           >
-            <option value="book">book</option>
-            <option value="chapter">chapter</option>
+            <option value="book">书籍（book）</option>
+            <option value="chapter">章节（chapter）</option>
           </select>
         </label>
         {scope === "chapter" ? (
           <label>
-            chapter_id
+            章节ID（chapter_id）
             <input
               value={String(v.chapter_id ?? selectedChapterId ?? "")}
               onChange={(e) => onChange({ chapter_id: e.target.value })}
@@ -118,7 +130,7 @@ function ActionPayloadEditor({
           </label>
         ) : null}
         <label>
-          max_structure_weight
+          结构权重上限（max_structure_weight）
           <input
             type="number"
             min={1}
@@ -128,7 +140,7 @@ function ActionPayloadEditor({
           />
         </label>
         <label>
-          max_tasks
+          任务上限（max_tasks）
           <input
             type="number"
             min={1}
@@ -138,7 +150,7 @@ function ActionPayloadEditor({
           />
         </label>
         <label>
-          replay.defer_max_rounds
+          回放最大轮次（replay.defer_max_rounds）
           <input
             type="number"
             min={1}
@@ -152,7 +164,7 @@ function ActionPayloadEditor({
           />
         </label>
         <label>
-          replay.defer_expire_grace
+          回放过期宽限（replay.defer_expire_grace）
           <input
             type="number"
             min={0}
@@ -172,38 +184,38 @@ function ActionPayloadEditor({
             checked={!!v.ban_strong_cliff}
             onChange={(e) => onChange({ ban_strong_cliff: e.target.checked })}
           />
-          ban_strong_cliff
+          禁止强悬崖（ban_strong_cliff）
         </label>
         <label>
-          budget.character_facts.max_items
+          角色事实条目上限（budget.character_facts.max_items）
           <input type="number" min={1} max={20} value={Number(cf.max_items ?? 8)} onChange={(e) => setBudget("character_facts", { max_items: Number(e.target.value) })} />
         </label>
         <label>
-          budget.character_facts.max_chars
+          角色事实字符上限（budget.character_facts.max_chars）
           <input type="number" min={120} max={6000} value={Number(cf.max_chars ?? 1000)} onChange={(e) => setBudget("character_facts", { max_chars: Number(e.target.value) })} />
         </label>
         <label>
-          budget.timeline_facts.max_items
+          时间线事实条目上限（budget.timeline_facts.max_items）
           <input type="number" min={1} max={20} value={Number(tf.max_items ?? 8)} onChange={(e) => setBudget("timeline_facts", { max_items: Number(e.target.value) })} />
         </label>
         <label>
-          budget.timeline_facts.max_chars
+          时间线事实字符上限（budget.timeline_facts.max_chars）
           <input type="number" min={120} max={6000} value={Number(tf.max_chars ?? 1000)} onChange={(e) => setBudget("timeline_facts", { max_chars: Number(e.target.value) })} />
         </label>
         <label>
-          budget.open_foreshadows.max_items
+          未回收伏笔条目上限（budget.open_foreshadows.max_items）
           <input type="number" min={1} max={20} value={Number(of.max_items ?? 6)} onChange={(e) => setBudget("open_foreshadows", { max_items: Number(e.target.value) })} />
         </label>
         <label>
-          budget.open_foreshadows.max_chars
+          未回收伏笔字符上限（budget.open_foreshadows.max_chars）
           <input type="number" min={120} max={6000} value={Number(of.max_chars ?? 900)} onChange={(e) => setBudget("open_foreshadows", { max_chars: Number(e.target.value) })} />
         </label>
         <label>
-          budget.growth_milestones.max_items
+          成长里程碑条目上限（budget.growth_milestones.max_items）
           <input type="number" min={1} max={20} value={Number(gm.max_items ?? 6)} onChange={(e) => setBudget("growth_milestones", { max_items: Number(e.target.value) })} />
         </label>
         <label>
-          budget.growth_milestones.max_chars
+          成长里程碑字符上限（budget.growth_milestones.max_chars）
           <input type="number" min={120} max={6000} value={Number(gm.max_chars ?? 900)} onChange={(e) => setBudget("growth_milestones", { max_chars: Number(e.target.value) })} />
         </label>
       </div>
@@ -213,7 +225,7 @@ function ActionPayloadEditor({
     return (
       <div className="agent-form-grid">
         <label>
-          window_next_chapters
+          影响后续章节数（window_next_chapters）
           <input
             type="number"
             min={1}
@@ -223,7 +235,7 @@ function ActionPayloadEditor({
           />
         </label>
         <label>
-          combo_type
+          组合类型（combo_type）
           <input value={String(v.combo_type ?? "reveal_combo")} onChange={(e) => onChange({ combo_type: e.target.value })} />
         </label>
       </div>
@@ -233,11 +245,11 @@ function ActionPayloadEditor({
     return (
       <div className="agent-form-grid">
         <label>
-          rotation_group
+          轮转组（rotation_group）
           <input value={String(v.rotation_group ?? "")} onChange={(e) => onChange({ rotation_group: e.target.value })} />
         </label>
         <label>
-          cooldown_volumes
+          冷却卷数（cooldown_volumes）
           <input
             type="number"
             min={1}
@@ -276,9 +288,21 @@ export function AgentConsolePanel(props: Props) {
   const [cleanupResult, setCleanupResult] = useState<any>(null);
   const [cleanupOnlyVisible, setCleanupOnlyVisible] = useState(true);
   const [cleanupSelectedIds, setCleanupSelectedIds] = useState<Record<string, boolean>>({});
+  const [cleanupConfirmDialog, setCleanupConfirmDialog] = useState<CleanupConfirmDialog>(null);
+  const [cleanupConfirmValue, setCleanupConfirmValue] = useState("");
+  const [cleanupConfirmError, setCleanupConfirmError] = useState("");
   const [fixPlan, setFixPlan] = useState<any>(null);
   const [fixSelectedIds, setFixSelectedIds] = useState<Record<string, boolean>>({});
   const [fixExecuteResult, setFixExecuteResult] = useState<any>(null);
+  const [orchestratePlanResult, setOrchestratePlanResult] = useState<any>(null);
+  const [orchestrateRunResult, setOrchestrateRunResult] = useState<any>(null);
+  const [orchestrateStepResults, setOrchestrateStepResults] = useState<Record<string, any>>({});
+  const [orchestrateDryRun, setOrchestrateDryRun] = useState(false);
+  const [orchestrateConfirmExecute, setOrchestrateConfirmExecute] = useState(false);
+  const [orchestrateDoCommit, setOrchestrateDoCommit] = useState(true);
+  const [orchestrateDoLearn, setOrchestrateDoLearn] = useState(true);
+  const [orchestrateSnapshotName, setOrchestrateSnapshotName] = useState("");
+  const [orchestrateSnapshotReason, setOrchestrateSnapshotReason] = useState("");
   const [sidecarHealth, setSidecarHealth] = useState<any>(null);
   const [sidecarLogs, setSidecarLogs] = useState<string[]>([]);
   const [busy, setBusy] = useState("");
@@ -361,9 +385,9 @@ export function AgentConsolePanel(props: Props) {
     const avg = Number(replayStats?.avg_replay_filtered ?? 0);
     const high = Number(replayThresholds?.avg_filtered_high ?? 3);
     const medium = Number(replayThresholds?.avg_filtered_medium ?? 1.5);
-    if (avg >= high) return { label: "high pressure", color: "#b91c1c" };
-    if (avg >= medium) return { label: "medium pressure", color: "#b45309" };
-    return { label: "stable", color: "#15803d" };
+    if (avg >= high) return { label: "高压（high pressure）", color: "#b91c1c" };
+    if (avg >= medium) return { label: "中压（medium pressure）", color: "#b45309" };
+    return { label: "稳定（stable）", color: "#15803d" };
   }, [replayStats, replayThresholds]);
   const selectedExportLog = useMemo(() => {
     if (!selectedExportLogId) return exportLogs[0] || null;
@@ -403,12 +427,21 @@ export function AgentConsolePanel(props: Props) {
   const groupedExportLogs = useMemo(() => {
     const groups: Record<string, any[]> = {};
     for (const x of filteredExportLogs) {
-      const k = String(x?.pack_name || "unknown").trim() || "unknown";
+      const k = String(x?.pack_name || "未知(unknown)").trim() || "未知(unknown)";
       if (!groups[k]) groups[k] = [];
       groups[k].push(x);
     }
     return Object.entries(groups).sort((a, b) => a[0].localeCompare(b[0], "zh-CN"));
   }, [filteredExportLogs]);
+  const orchestratePlanSummary = useMemo(() => {
+    const plan = orchestratePlanResult?.plan && typeof orchestratePlanResult.plan === "object" ? orchestratePlanResult.plan : {};
+    return {
+      requiresConfirmation: !!plan?.requires_confirmation,
+      actionsCount: Number(plan?.actions_count || 0),
+      warnCount: Number(plan?.warn_count || 0),
+      nextPhase: String(plan?.next_recommended_phase || "-"),
+    };
+  }, [orchestratePlanResult]);
 
   async function loadSettings() {
     setBusy("settings");
@@ -453,7 +486,7 @@ export function AgentConsolePanel(props: Props) {
     setErr("");
     try {
       const out = await window.desktopApi.sidecarStart();
-      setInfo(`Sidecar started at ${String(out?.baseUrl || settings?.baseUrl || "-")}`);
+      setInfo(`侧车(Sidecar)已启动：${String(out?.baseUrl || settings?.baseUrl || "-")}`);
       const s = await window.desktopApi.settingsGet();
       setSettings(s || {});
       setSidecarHealth(await window.desktopApi.sidecarHealth());
@@ -469,7 +502,7 @@ export function AgentConsolePanel(props: Props) {
     setErr("");
     try {
       await window.desktopApi.sidecarStop();
-      setInfo("Sidecar stopped.");
+      setInfo("侧车(Sidecar)已停止。");
       setSidecarHealth(await window.desktopApi.sidecarHealth());
     } catch (e: any) {
       setErr(String(e?.message || e));
@@ -500,7 +533,7 @@ export function AgentConsolePanel(props: Props) {
       setHealth(h);
       const s = await window.desktopApi.settingsGet();
       setSettings(s || {});
-      setInfo(`Desktop ready. sidecar=${String(sh?.ok ? "ok" : "down")} api=${String(h?.ok ? "ok" : "down")}`);
+      setInfo(`桌面已就绪。侧车(Sidecar)=${String(sh?.ok ? "正常(ok)" : "故障(down)")} API=${String(h?.ok ? "正常(ok)" : "故障(down)")}`);
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -541,7 +574,7 @@ export function AgentConsolePanel(props: Props) {
   function useMissingAsActions() {
     const missing = planAutobuildSummary.comboMissing || [];
     if (!missing.length) {
-      setInfo("No missing combos to add.");
+      setInfo("没有缺失组合可添加。");
       return;
     }
     const generated = missing.map((comboType: string) => ({
@@ -566,7 +599,7 @@ export function AgentConsolePanel(props: Props) {
       for (const g of generated) next[String(g.action_id)] = true;
       return next;
     });
-    setInfo(`Added ${generated.length} action(s) from missing combos.`);
+    setInfo(`已从缺失组合生成 ${generated.length} 个动作。`);
   }
 
   async function runApply(dryRun = false) {
@@ -629,6 +662,84 @@ export function AgentConsolePanel(props: Props) {
     }
   }
 
+  async function runOrchestratePlan() {
+    if (!bookId) return;
+    setBusy("orchestrate:plan");
+    setErr("");
+    try {
+      const out = await window.desktopApi.agentOrchestratePlan({
+        book_id: bookId,
+        chapter_id: chapterId || undefined,
+        include_snapshot: true,
+        include_style: true,
+      });
+      setOrchestratePlanResult(out || {});
+      setInfo("总控 PLAN 完成。");
+    } catch (e: any) {
+      setErr(String(e?.message || e));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function runOrchestrateStep(phase: "PLAN" | "EXECUTE" | "VERIFY" | "COMMIT" | "LEARN") {
+    if (!bookId) return;
+    setBusy(`orchestrate:step:${phase.toLowerCase()}`);
+    setErr("");
+    try {
+      const out = await window.desktopApi.agentOrchestrateStep({
+        book_id: bookId,
+        chapter_id: chapterId || undefined,
+        phase,
+        dry_run: orchestrateDryRun,
+        confirm_execute: orchestrateConfirmExecute,
+        snapshot_name: orchestrateSnapshotName.trim() || undefined,
+        snapshot_reason: orchestrateSnapshotReason.trim() || undefined,
+        proposal: orchestratePlanResult?.plan?.proposal,
+      });
+      setOrchestrateStepResults((m) => ({ ...m, [phase]: out || {} }));
+      if (phase === "PLAN") setOrchestratePlanResult({ ok: true, plan: out?.result || {} });
+      if (phase === "VERIFY") await runDiagnose();
+      if (phase === "EXECUTE") await loadAudits();
+      setInfo(`总控 ${phase} 完成。`);
+    } catch (e: any) {
+      setErr(String(e?.message || e));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function runOrchestrateAll() {
+    if (!bookId) return;
+    setBusy("orchestrate:run");
+    setErr("");
+    try {
+      const out = await window.desktopApi.agentOrchestrateRun({
+        book_id: bookId,
+        chapter_id: chapterId || undefined,
+        dry_run: orchestrateDryRun,
+        do_execute: true,
+        do_verify: true,
+        do_commit: orchestrateDoCommit,
+        do_learn: orchestrateDoLearn,
+        confirm_execute: orchestrateConfirmExecute,
+        snapshot_name: orchestrateSnapshotName.trim() || undefined,
+        snapshot_reason: orchestrateSnapshotReason.trim() || undefined,
+      });
+      setOrchestrateRunResult(out || {});
+      if (out?.phases && typeof out.phases === "object") {
+        setOrchestrateStepResults((m) => ({ ...m, ...out.phases }));
+      }
+      await runDiagnose();
+      await loadAudits();
+      setInfo(`总控全流程执行完成：${String(out?.state || "-")}`);
+    } catch (e: any) {
+      setErr(String(e?.message || e));
+    } finally {
+      setBusy("");
+    }
+  }
+
   async function loadWorkspaceBinding() {
     if (!bookId) return;
     setBusy("workspace:get");
@@ -653,7 +764,7 @@ export function AgentConsolePanel(props: Props) {
         body: { workspace_path: workspacePath.trim() },
       });
       setWorkspacePath(String(out?.workspace_path || workspacePath.trim()));
-      setInfo("Workspace saved.");
+      setInfo("工作区已保存。");
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -780,10 +891,21 @@ export function AgentConsolePanel(props: Props) {
             .filter(Boolean)
         : [];
     if (!dryRun) {
-      const msg = cleanupOnlyVisible
-        ? `将清理“当前筛选结果”范围内的缺失导出记录（候选 ${exportIds.length} 条）。继续？`
-        : "将清理本书范围内的缺失导出记录。继续？";
-      if (!window.confirm(msg)) return;
+      setCleanupConfirmDialog({
+        kind: "scope",
+        title: "清理缺失导出记录",
+        targetLabel: cleanupOnlyVisible
+          ? `范围：当前筛选日志（候选 ${exportIds.length} 条）`
+          : "范围：当前书籍 / 当前卷（按接口参数）",
+        warning: cleanupOnlyVisible
+          ? "将删除当前筛选范围内已缺失文件的导出记录，操作不可撤销。"
+          : "将清理当前书籍范围内缺失文件的导出记录，操作不可撤销。",
+        expectedText: "清理",
+        exportIds,
+      });
+      setCleanupConfirmValue("");
+      setCleanupConfirmError("");
+      return;
     }
     setBusy(dryRun ? "export:cleanup:dry" : "export:cleanup");
     setErr("");
@@ -805,11 +927,34 @@ export function AgentConsolePanel(props: Props) {
         setCleanupSelectedIds(next);
       }
       if (!dryRun) {
-        setInfo(`Cleanup done. deleted=${String(out?.deleted_count ?? 0)}`);
+        setInfo(`清理完成。已删除=${String(out?.deleted_count ?? 0)}`);
       }
       await loadExportLogs();
     } catch (e: any) {
       setErr(String(e?.message || e));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function runCleanupMissingCommit(exportIds: string[]): Promise<boolean> {
+    if (!bookId) return false;
+    setBusy("export:cleanup");
+    setErr("");
+    try {
+      const out = await window.desktopApi.exportCleanupMissing({
+        book_id: bookId,
+        volume_id: exportVolumeId.trim() || undefined,
+        dry_run: false,
+        export_ids: cleanupOnlyVisible ? exportIds : undefined,
+      });
+      setCleanupResult(out || {});
+      setInfo(`清理完成。已删除=${String(out?.deleted_count ?? 0)}`);
+      await loadExportLogs();
+      return true;
+    } catch (e: any) {
+      setErr(String(e?.message || e));
+      return false;
     } finally {
       setBusy("");
     }
@@ -827,7 +972,7 @@ export function AgentConsolePanel(props: Props) {
       const p = String(rebuilt?.output_dir || "");
       if (p) await window.desktopApi.openPath(p, true);
       await loadExportLogs();
-      setInfo(`Rebuilt from export_id=${exportId}`);
+      setInfo(`已根据导出ID（export_id）重建：${exportId}`);
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -884,12 +1029,12 @@ export function AgentConsolePanel(props: Props) {
       await loadExportLogs();
       if (out?.recheck?.summary) {
         setInfo(
-          `Fix executed. recheck overall=${String(out.recheck.summary.overall || "-")} fail=${String(
+          `修复已执行。复检 overall=${String(out.recheck.summary.overall || "-")} fail=${String(
             out.recheck.summary.fail_count ?? "-"
           )} warn=${String(out.recheck.summary.warn_count ?? "-")}`
         );
       } else {
-        setInfo("Fix executed.");
+        setInfo("修复已执行。");
       }
     } catch (e: any) {
       setErr(String(e?.message || e));
@@ -910,7 +1055,7 @@ export function AgentConsolePanel(props: Props) {
       });
       setFixExecuteResult((m: any) => ({ ...(m || {}), recheck: out?.report || null, recheck_delta: out?.delta || null }));
       const s = out?.report?.summary || {};
-      setInfo(`Recheck done. overall=${String(s.overall || "-")} fail=${String(s.fail_count ?? "-")} warn=${String(s.warn_count ?? "-")}`);
+      setInfo(`复检完成。overall=${String(s.overall || "-")} fail=${String(s.fail_count ?? "-")} warn=${String(s.warn_count ?? "-")}`);
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -922,7 +1067,20 @@ export function AgentConsolePanel(props: Props) {
     if (!bookId) return;
     const ids = Object.keys(cleanupSelectedIds).filter((k) => cleanupSelectedIds[k]);
     if (ids.length === 0) return;
-    if (!window.confirm(`将删除已勾选的缺失导出记录 ${ids.length} 条。继续？`)) return;
+    setCleanupConfirmDialog({
+      kind: "selected",
+      title: "删除已勾选的缺失记录",
+      targetLabel: `将删除 ${ids.length} 条缺失导出记录`,
+      warning: "仅删除导出日志记录，不会删除真实文件（文件本身已缺失）。",
+      expectedText: "清理",
+      exportIds: ids,
+    });
+    setCleanupConfirmValue("");
+    setCleanupConfirmError("");
+  }
+
+  async function runCleanupSelectedMissingCommit(ids: string[]): Promise<boolean> {
+    if (!bookId) return false;
     setBusy("export:cleanup:selected");
     setErr("");
     try {
@@ -933,12 +1091,28 @@ export function AgentConsolePanel(props: Props) {
         export_ids: ids,
       });
       setCleanupResult(out || {});
-      setInfo(`Deleted selected missing logs: ${String(out?.deleted_count ?? 0)}`);
+      setInfo(`已删除所选缺失日志：${String(out?.deleted_count ?? 0)}`);
       await loadExportLogs();
+      return true;
     } catch (e: any) {
       setErr(String(e?.message || e));
+      return false;
     } finally {
       setBusy("");
+    }
+  }
+
+  async function confirmCleanupDialog() {
+    if (!cleanupConfirmDialog) return;
+    setCleanupConfirmError("");
+    const ok =
+      cleanupConfirmDialog.kind === "scope"
+        ? await runCleanupMissingCommit(cleanupConfirmDialog.exportIds)
+        : await runCleanupSelectedMissingCommit(cleanupConfirmDialog.exportIds);
+    if (ok) {
+      setCleanupConfirmDialog(null);
+      setCleanupConfirmValue("");
+      setCleanupConfirmError("");
     }
   }
 
@@ -988,6 +1162,10 @@ export function AgentConsolePanel(props: Props) {
     void runOneClickReady();
   }, [settings?.autoStartSidecar]);
   useEffect(() => {
+    if (!window.desktopApi || typeof window.desktopApi.onLog !== "function") {
+      setErr("桌面预加载接口未就绪，请重新安装或重新打包客户端。");
+      return;
+    }
     window.desktopApi.onLog((line: string) => {
       setSidecarLogs((arr) => [line, ...arr].slice(0, 200));
     });
@@ -1016,13 +1194,13 @@ export function AgentConsolePanel(props: Props) {
   return (
     <section className="wb-panel" style={{ minHeight: "auto", marginBottom: 10 }}>
       <div className="row" style={{ marginBottom: 8 }}>
-        <h3 style={{ margin: 0 }}>Agent Console</h3>
-        <span className="small">{busy ? `busy: ${busy}` : "idle"}</span>
+        <h3 style={{ margin: 0 }}>智能体控制台</h3>
+        <span className="small">{busy ? `忙碌：${busy}` : "空闲"}</span>
       </div>
 
       <div className="agent-topbar">
         <label>
-          baseUrl
+          服务地址（baseUrl）
           <input
             value={String(settings?.baseUrl || "")}
             onChange={(e) => setSettings({ ...(settings || {}), baseUrl: e.target.value })}
@@ -1030,7 +1208,7 @@ export function AgentConsolePanel(props: Props) {
           />
         </label>
         <label>
-          agentToken
+          访问令牌（agentToken）
           <input
             type="password"
             value={String(settings?.agentToken || "")}
@@ -1039,7 +1217,7 @@ export function AgentConsolePanel(props: Props) {
           />
         </label>
         <label>
-          timeoutMs
+          超时时间（timeoutMs）
           <input
             type="number"
             min={3000}
@@ -1050,7 +1228,7 @@ export function AgentConsolePanel(props: Props) {
           />
         </label>
         <label>
-          database_url
+          数据库地址（database_url）
           <input
             value={String(settings?.databaseUrl || "")}
             onChange={(e) => setSettings({ ...(settings || {}), databaseUrl: e.target.value })}
@@ -1058,7 +1236,7 @@ export function AgentConsolePanel(props: Props) {
           />
         </label>
         <label>
-          infra_provider
+          基础设施提供方（infra_provider）
           <select
             value={String(settings?.infraProvider || "docker")}
             onChange={(e) => {
@@ -1067,13 +1245,13 @@ export function AgentConsolePanel(props: Props) {
               void saveSettings({ infraProvider: v });
             }}
           >
-            <option value="docker">docker</option>
-            <option value="local_pg">local_pg</option>
-            <option value="none">none</option>
+            <option value="docker">Docker（docker）</option>
+            <option value="local_pg">本地 PostgreSQL（local_pg）</option>
+            <option value="none">不启动（none）</option>
           </select>
         </label>
         <label>
-          infra_compose
+          基础设施编排文件（infra_compose）
           <input
             value={String(settings?.infraComposePath || "")}
             onChange={(e) => setSettings({ ...(settings || {}), infraComposePath: e.target.value })}
@@ -1081,7 +1259,7 @@ export function AgentConsolePanel(props: Props) {
           />
         </label>
         <label>
-          local_pg_ctl
+          本地PG控制（local_pg_ctl）
           <input
             value={String(settings?.localPgCtlPath || "")}
             onChange={(e) => setSettings({ ...(settings || {}), localPgCtlPath: e.target.value })}
@@ -1089,7 +1267,7 @@ export function AgentConsolePanel(props: Props) {
           />
         </label>
         <label>
-          local_initdb
+          本地PG初始化（local_initdb）
           <input
             value={String(settings?.localPgInitDbPath || "")}
             onChange={(e) => setSettings({ ...(settings || {}), localPgInitDbPath: e.target.value })}
@@ -1097,7 +1275,7 @@ export function AgentConsolePanel(props: Props) {
           />
         </label>
         <label>
-          local_pg_data
+          本地PG数据目录（local_pg_data）
           <input
             value={String(settings?.localPgDataDir || "")}
             onChange={(e) => setSettings({ ...(settings || {}), localPgDataDir: e.target.value })}
@@ -1105,7 +1283,7 @@ export function AgentConsolePanel(props: Props) {
           />
         </label>
         <label>
-          sidecar_python
+          侧车Python路径（sidecar_python）
           <input
             value={String(settings?.sidecarPythonPath || "")}
             onChange={(e) => setSettings({ ...(settings || {}), sidecarPythonPath: e.target.value })}
@@ -1113,7 +1291,7 @@ export function AgentConsolePanel(props: Props) {
           />
         </label>
         <label>
-          sidecar_exe
+          侧车可执行文件（sidecar_exe）
           <input
             value={String(settings?.sidecarExecutablePath || "")}
             onChange={(e) => setSettings({ ...(settings || {}), sidecarExecutablePath: e.target.value })}
@@ -1121,7 +1299,7 @@ export function AgentConsolePanel(props: Props) {
           />
         </label>
         <label>
-          sidecar_cwd
+          侧车工作目录（sidecar_cwd）
           <input
             value={String(settings?.sidecarCwd || "")}
             onChange={(e) => setSettings({ ...(settings || {}), sidecarCwd: e.target.value })}
@@ -1129,7 +1307,7 @@ export function AgentConsolePanel(props: Props) {
           />
         </label>
         <label>
-          sidecar_port
+          侧车端口（sidecar_port）
           <input
             type="number"
             min={1000}
@@ -1149,7 +1327,7 @@ export function AgentConsolePanel(props: Props) {
               void saveSettings({ autoStartSidecar: v });
             }}
           />
-          <span className="small">auto_start</span>
+          <span className="small">自动启动（auto_start）</span>
         </label>
         <label className="row" style={{ gap: 6, alignItems: "center", minWidth: 160 }}>
           <input
@@ -1161,10 +1339,10 @@ export function AgentConsolePanel(props: Props) {
               void saveSettings({ autoStartInfra: v });
             }}
           />
-          <span className="small">auto_start_infra</span>
+          <span className="small">自动启动基础设施（auto_start_infra）</span>
         </label>
         <label>
-          book_id
+          书籍ID（book_id）
           <input
             value={bookId}
             onChange={(e) => {
@@ -1174,7 +1352,7 @@ export function AgentConsolePanel(props: Props) {
           />
         </label>
         <label>
-          chapter_id
+          章节ID（chapter_id）
           <input
             value={chapterId}
             onChange={(e) => {
@@ -1187,17 +1365,19 @@ export function AgentConsolePanel(props: Props) {
 
       <div className="row" style={{ marginTop: 8 }}>
         <div className="row" style={{ gap: 8 }}>
-          <button onClick={() => void runOneClickReady()} disabled={!!busy}>One-Click Ready</button>
-          <button onClick={() => void runHealth()}>Health</button>
-          <button onClick={() => void runSidecarStart()}>Start Sidecar</button>
-          <button onClick={() => void runSidecarStop()}>Stop Sidecar</button>
-          <button onClick={() => void runSidecarHealth()}>Sidecar Health</button>
-          <button onClick={() => void runDiagnose()} disabled={!bookId}>Diagnose</button>
-          <button onClick={() => void runPropose()} disabled={!bookId}>Propose</button>
-          <button onClick={() => void runPlanAutobuild()} disabled={!bookId}>AutoBuild Plan</button>
-          <button onClick={() => void runApply(false)} disabled={!bookId}>Apply Selected</button>
-          <button onClick={() => void runApply(true)} disabled={!bookId}>Apply Dry Run</button>
-          <button onClick={() => void loadAudits()} disabled={!bookId}>Refresh Audits</button>
+          <button onClick={() => void runOneClickReady()} disabled={!!busy}>一键就绪</button>
+          <button onClick={() => void runHealth()}>健康检查</button>
+          <button onClick={() => void runSidecarStart()}>启动侧车(Sidecar)</button>
+          <button onClick={() => void runSidecarStop()}>停止侧车(Sidecar)</button>
+          <button onClick={() => void runSidecarHealth()}>侧车(Sidecar) 健康</button>
+          <button onClick={() => void runDiagnose()} disabled={!bookId}>诊断</button>
+          <button onClick={() => void runPropose()} disabled={!bookId}>生成建议</button>
+          <button onClick={() => void runOrchestratePlan()} disabled={!bookId}>总控 PLAN</button>
+          <button onClick={() => void runOrchestrateAll()} disabled={!bookId}>总控一键全流程</button>
+          <button onClick={() => void runPlanAutobuild()} disabled={!bookId}>自动构建计划</button>
+          <button onClick={() => void runApply(false)} disabled={!bookId}>应用已选</button>
+          <button onClick={() => void runApply(true)} disabled={!bookId}>应用演练（Dry Run）</button>
+          <button onClick={() => void loadAudits()} disabled={!bookId}>刷新审计</button>
           <label>
             audit action
             <select value={auditActionFilter} onChange={(e) => setAuditActionFilter(e.target.value)}>
@@ -1219,32 +1399,90 @@ export function AgentConsolePanel(props: Props) {
         {err ? <span className="small" style={{ color: "#b91c1c" }}>{err}</span> : null}
       </div>
 
+      <div className="agent-audit-row" style={{ marginTop: 8 }}>
+        <div className="small" style={{ fontWeight: 600 }}>Agent 总控层（PLAN / EXECUTE / VERIFY / COMMIT / LEARN）</div>
+        <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+          <label className="agent-checkbox">
+            <input type="checkbox" checked={orchestrateDryRun} onChange={(e) => setOrchestrateDryRun(e.target.checked)} />
+            Dry Run
+          </label>
+          <label className="agent-checkbox">
+            <input
+              type="checkbox"
+              checked={orchestrateConfirmExecute}
+              onChange={(e) => setOrchestrateConfirmExecute(e.target.checked)}
+            />
+            已确认执行高风险动作
+          </label>
+          <label className="agent-checkbox">
+            <input type="checkbox" checked={orchestrateDoCommit} onChange={(e) => setOrchestrateDoCommit(e.target.checked)} />
+            COMMIT（快照）
+          </label>
+          <label className="agent-checkbox">
+            <input type="checkbox" checked={orchestrateDoLearn} onChange={(e) => setOrchestrateDoLearn(e.target.checked)} />
+            LEARN（风格进化）
+          </label>
+          <label>
+            快照名（可选）
+            <input value={orchestrateSnapshotName} onChange={(e) => setOrchestrateSnapshotName(e.target.value)} />
+          </label>
+          <label>
+            快照原因（可选）
+            <input value={orchestrateSnapshotReason} onChange={(e) => setOrchestrateSnapshotReason(e.target.value)} />
+          </label>
+        </div>
+        <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+          <button onClick={() => void runOrchestrateStep("PLAN")} disabled={!bookId || !!busy}>PLAN</button>
+          <button onClick={() => void runOrchestrateStep("EXECUTE")} disabled={!bookId || !!busy}>EXECUTE</button>
+          <button onClick={() => void runOrchestrateStep("VERIFY")} disabled={!bookId || !!busy}>VERIFY</button>
+          <button onClick={() => void runOrchestrateStep("COMMIT")} disabled={!bookId || !!busy}>COMMIT</button>
+          <button onClick={() => void runOrchestrateStep("LEARN")} disabled={!bookId || !!busy}>LEARN</button>
+          <button onClick={() => void runOrchestrateAll()} disabled={!bookId || !!busy}>一键全流程</button>
+        </div>
+        <div className="small">
+          PLAN 概览：动作={String(orchestratePlanSummary.actionsCount)}，告警={String(orchestratePlanSummary.warnCount)}，下一阶段=
+          {String(orchestratePlanSummary.nextPhase)}，需确认={orchestratePlanSummary.requiresConfirmation ? "是" : "否"}
+        </div>
+        <details>
+          <summary className="small">总控 PLAN 输出</summary>
+          <pre className="small">{JSON.stringify(orchestratePlanResult, null, 2)}</pre>
+        </details>
+        <details>
+          <summary className="small">总控阶段输出</summary>
+          <pre className="small">{JSON.stringify(orchestrateStepResults, null, 2)}</pre>
+        </details>
+        <details>
+          <summary className="small">总控全流程输出</summary>
+          <pre className="small">{JSON.stringify(orchestrateRunResult, null, 2)}</pre>
+        </details>
+      </div>
+
       <div className="agent-grid">
         <div className="agent-col">
-          <h4>Diagnosis</h4>
-          <div className="small">health</div>
+          <h4>诊断</h4>
+          <div className="small">健康</div>
           <pre>{JSON.stringify(health, null, 2)}</pre>
-          <div className="small">sidecar health</div>
+          <div className="small">侧车(Sidecar) 健康</div>
           <pre>{JSON.stringify(sidecarHealth, null, 2)}</pre>
-          <div className="small">sidecar logs</div>
+          <div className="small">侧车(Sidecar) 日志</div>
           <div className="scroll" style={{ maxHeight: 120 }}>
-            {sidecarLogs.length === 0 ? <div className="hint">No sidecar logs.</div> : null}
+            {sidecarLogs.length === 0 ? <div className="hint">暂无侧车(Sidecar) 日志。</div> : null}
             {sidecarLogs.map((x, i) => (
               <div key={`${i}:${x}`} className="small mono">{x}</div>
             ))}
           </div>
-          <div className="small">replay stats</div>
+          <div className="small">回放统计</div>
           {replayStats ? (
             <div className="agent-audit-row">
-              <div className="small">sample_size: {String(replayStats.sample_size ?? "-")}</div>
+              <div className="small">样本量（sample_size）：{String(replayStats.sample_size ?? "-")}</div>
               <div className="small">
-                avg_replay_filtered:{" "}
+                平均过滤回放（avg_replay_filtered）：{" "}
                 <span style={{ color: replayTone.color, fontWeight: 600 }}>
                   {String(replayStats.avg_replay_filtered ?? "-")} ({replayTone.label})
                 </span>
               </div>
               <div className="small">
-                max_round_hits:{" "}
+                最大轮次命中（max_round_hits）：{" "}
                 <span
                   style={{
                     color:
@@ -1257,7 +1495,7 @@ export function AgentConsolePanel(props: Props) {
                 </span>
               </div>
               <div className="small">
-                expired_hits:{" "}
+                过期命中（expired_hits）：{" "}
                 <span
                   style={{
                     color:
@@ -1270,26 +1508,26 @@ export function AgentConsolePanel(props: Props) {
                 </span>
               </div>
               <div className="small">
-                thresholds: medium={String(replayThresholds.avg_filtered_medium)} high={String(replayThresholds.avg_filtered_high)} low=
+                阈值（thresholds）：medium={String(replayThresholds.avg_filtered_medium)} high={String(replayThresholds.avg_filtered_high)} low=
                 {String(replayThresholds.avg_filtered_low)}
               </div>
               <div className="small">
-                suggested replay: defer_max_rounds=
+                建议回放（suggested replay）：defer_max_rounds=
                 <span style={{ fontWeight: 600 }}>{String(replaySuggestion?.defer_max_rounds ?? "-")}</span>
                 {" , "}defer_expire_grace=
                 <span style={{ fontWeight: 600 }}>{String(replaySuggestion?.defer_expire_grace ?? "-")}</span>
               </div>
             </div>
           ) : (
-            <div className="hint">No replay stats yet.</div>
+            <div className="hint">暂无回放统计。</div>
           )}
-          <div className="small">diagnosis</div>
+          <div className="small">诊断详情</div>
           <pre>{JSON.stringify(diagnosis, null, 2)}</pre>
         </div>
 
         <div className="agent-col">
-          <h4>Proposed Actions</h4>
-          {actions.length === 0 ? <div className="hint">No actions</div> : null}
+          <h4>建议动作</h4>
+          {actions.length === 0 ? <div className="hint">暂无动作</div> : null}
           <div className="scroll" style={{ maxHeight: 420 }}>
             {actions.map((a) => {
               const key = String(a.action_id || a.type);
@@ -1303,7 +1541,7 @@ export function AgentConsolePanel(props: Props) {
                       checked={checked}
                       onChange={(e) => setSelectedIds((m) => ({ ...m, [key]: e.target.checked }))}
                     />
-                    <strong>{String(a.type || "action")}</strong>
+                    <strong>{String(a.type || "动作")}</strong>
                   </label>
                   <div className="small">{String(a.reason || "")}</div>
               <ActionPayloadEditor
@@ -1319,53 +1557,53 @@ export function AgentConsolePanel(props: Props) {
         </div>
 
         <div className="agent-col">
-          <h4>Execution & Audits</h4>
-          <div className="small">chapter engineering export</div>
+          <h4>执行与审计</h4>
+          <div className="small">章节工程导出</div>
           <div className="agent-audit-row">
             <label>
-              workspace_path
+              工作区路径（workspace_path）
               <input value={workspacePath} onChange={(e) => setWorkspacePath(e.target.value)} />
             </label>
             <div className="row" style={{ gap: 8 }}>
-              <button onClick={() => void loadWorkspaceBinding()} disabled={!bookId}>Load Workspace</button>
-              <button onClick={() => void saveWorkspaceBinding()} disabled={!bookId || !workspacePath.trim()}>Save Workspace</button>
+              <button onClick={() => void loadWorkspaceBinding()} disabled={!bookId}>加载工作区</button>
+              <button onClick={() => void saveWorkspaceBinding()} disabled={!bookId || !workspacePath.trim()}>保存工作区</button>
             </div>
             <label>
-              volume_id
-              <input value={exportVolumeId} onChange={(e) => setExportVolumeId(e.target.value)} placeholder="for volume/package export" />
+              卷 ID（volume_id）
+              <input value={exportVolumeId} onChange={(e) => setExportVolumeId(e.target.value)} placeholder="用于卷/发布包导出" />
             </label>
             <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
-              <button onClick={() => void runExportChapter()} disabled={!bookId || !chapterId}>Export This Chapter</button>
-              <button onClick={() => void runExportVolume()} disabled={!bookId || !exportVolumeId.trim()}>Export Volume</button>
-              <button onClick={() => void runPublishPack()} disabled={!bookId || !exportVolumeId.trim()}>Build Publish Pack</button>
-              <button onClick={() => void openExportFolder()} disabled={!exportResult?.output_dir && !exportResult?.output_path}>Open Export Folder</button>
-              <button onClick={() => void loadExportLogs()} disabled={!bookId}>Refresh Export Logs</button>
+              <button onClick={() => void runExportChapter()} disabled={!bookId || !chapterId}>导出当前章节</button>
+              <button onClick={() => void runExportVolume()} disabled={!bookId || !exportVolumeId.trim()}>导出整卷</button>
+              <button onClick={() => void runPublishPack()} disabled={!bookId || !exportVolumeId.trim()}>生成发布包</button>
+              <button onClick={() => void openExportFolder()} disabled={!exportResult?.output_dir && !exportResult?.output_path}>打开导出目录</button>
+              <button onClick={() => void loadExportLogs()} disabled={!bookId}>刷新导出日志</button>
             </div>
             <pre>{JSON.stringify(exportResult, null, 2)}</pre>
             <div className="row" style={{ gap: 8, alignItems: "center" }}>
-              <div className="small">export logs ({filteredExportLogs.length}/{exportLogs.length})</div>
+              <div className="small">导出日志（{filteredExportLogs.length}/{exportLogs.length}）</div>
               <label className="small">
-                range
+                范围
                 <select value={exportLogDays} onChange={(e) => setExportLogDays(e.target.value)}>
-                  <option value="all">all</option>
-                  <option value="7">7d</option>
-                  <option value="30">30d</option>
-                  <option value="90">90d</option>
+                  <option value="all">全部</option>
+                  <option value="7">7天</option>
+                  <option value="30">30天</option>
+                  <option value="90">90天</option>
                 </select>
               </label>
-              <button onClick={() => void runCleanupMissing(true)} disabled={!bookId}>Check Missing</button>
-              <button onClick={() => void runCleanupMissing(false)} disabled={!bookId}>Cleanup Missing</button>
+              <button onClick={() => void runCleanupMissing(true)} disabled={!bookId}>检查缺失</button>
+              <button onClick={() => void runCleanupMissing(false)} disabled={!bookId}>清理缺失</button>
               <label className="agent-checkbox">
                 <input
                   type="checkbox"
                   checked={cleanupOnlyVisible}
                   onChange={(e) => setCleanupOnlyVisible(e.target.checked)}
                 />
-                only current filtered logs
+                仅当前筛选日志
               </label>
             </div>
             <div className="scroll" style={{ maxHeight: 180 }}>
-              {filteredExportLogs.length === 0 ? <div className="hint">No export logs.</div> : null}
+              {filteredExportLogs.length === 0 ? <div className="hint">暂无导出日志。</div> : null}
               {groupedExportLogs.map(([packName, rows]) => (
                 <div key={packName}>
                   <div className="small" style={{ fontWeight: 600, marginTop: 6 }}>
@@ -1389,52 +1627,52 @@ export function AgentConsolePanel(props: Props) {
                         }}
                       >
                         <div className="small mono">{String(x?.export_id || "-")}</div>
-                        <div className="small">files={String(x?.files_count ?? "-")}</div>
+                        <div className="small">文件数={String(x?.files_count ?? "-")}</div>
                         <div className="small">{String(x?.created_at || "")}</div>
                         <div className="small" style={{ color: exists === false ? "#b91c1c" : undefined }}>
-                          {exists === false ? "path missing" : exists === true ? "path ok" : "checking..."}
+                          {exists === false ? "路径缺失" : exists === true ? "路径正常" : "检查中..."}
                         </div>
-                        <button onClick={() => setSelectedExportLogId(String(x?.export_id || ""))}>Details</button>
-                        <button onClick={() => void openExportLogItem(x)}>Open</button>
+                        <button onClick={() => setSelectedExportLogId(String(x?.export_id || ""))}>详情</button>
+                        <button onClick={() => void openExportLogItem(x)}>打开</button>
                       </div>
                     );
                   })}
                 </div>
               ))}
             </div>
-            <div className="small" style={{ marginTop: 6 }}>export detail</div>
-            {!selectedExportLog ? <div className="hint">Select one export log entry.</div> : null}
+            <div className="small" style={{ marginTop: 6 }}>导出详情</div>
+            {!selectedExportLog ? <div className="hint">请选择一条导出日志。</div> : null}
             {selectedExportLog ? (
               <div className="agent-audit-row">
-                <div className="small mono">export_id: {String(selectedExportLog?.export_id || "-")}</div>
-                <div className="small">pack: {String(selectedExportLog?.pack_name || "-")}</div>
-                <div className="small">output: {String(selectedExportLog?.output_dir || "-")}</div>
-                <div className="small">created_at: {String(selectedExportLog?.created_at || "-")}</div>
-                <div className="small">files: {String(selectedExportFiles.length)}</div>
+                <div className="small mono">导出ID（export_id）：{String(selectedExportLog?.export_id || "-")}</div>
+                <div className="small">包名：{String(selectedExportLog?.pack_name || "-")}</div>
+                <div className="small">输出目录：{String(selectedExportLog?.output_dir || "-")}</div>
+                <div className="small">创建时间：{String(selectedExportLog?.created_at || "-")}</div>
+                <div className="small">文件数：{String(selectedExportFiles.length)}</div>
                 {selectedExportPreflight ? (
                   <div className="small">
-                    preflight: {String((selectedExportPreflight as any)?.overall || "-")} · fail=
-                    {String((selectedExportPreflight as any)?.fail_count ?? "-")} · warn=
-                    {String((selectedExportPreflight as any)?.warn_count ?? "-")} · suggest=
+                    预检：{String((selectedExportPreflight as any)?.overall || "-")} · 失败=
+                    {String((selectedExportPreflight as any)?.fail_count ?? "-")} · 警告=
+                    {String((selectedExportPreflight as any)?.warn_count ?? "-")} · 建议=
                     {String((selectedExportPreflight as any)?.suggest_count ?? "-")}
                   </div>
                 ) : null}
                 <div className="row" style={{ gap: 8 }}>
-                  <button onClick={() => void runRebuildSelected()}>Rebuild Selected</button>
-                  <button onClick={() => void openExportLogItem(selectedExportLog)}>Open Output Dir</button>
+                  <button onClick={() => void runRebuildSelected()}>重建所选</button>
+                  <button onClick={() => void openExportLogItem(selectedExportLog)}>打开输出目录</button>
                   <button onClick={() => void runFixwizardPlan()} disabled={!bookId || !exportVolumeId.trim()}>
-                    Fix Wizard Plan
+                    修复向导：生成方案
                   </button>
                   <button onClick={() => void runFixwizardExecute()} disabled={fixPlanItems.length === 0}>
-                    Execute Selected Fixes
+                    执行已选修复
                   </button>
                   <button onClick={() => void runFixwizardRecheck()} disabled={!bookId || !exportVolumeId.trim()}>
-                    Recheck
+                    复检
                   </button>
                 </div>
                 {selectedExportPreflightHints.length > 0 ? (
                   <details>
-                    <summary className="small">preflight hints ({selectedExportPreflightHints.length})</summary>
+                    <summary className="small">预检提示（{selectedExportPreflightHints.length}）</summary>
                     <div className="scroll" style={{ maxHeight: 120 }}>
                       {selectedExportPreflightHints.map((h: any, i: number) => (
                         <div key={`${String(h?.code || "hint")}:${i}`} className="small" style={{ marginTop: 6 }}>
@@ -1450,7 +1688,7 @@ export function AgentConsolePanel(props: Props) {
                   </details>
                 ) : null}
                 <div className="scroll" style={{ maxHeight: 140 }}>
-                  {selectedExportFiles.length === 0 ? <div className="hint">No files in manifest.</div> : null}
+                  {selectedExportFiles.length === 0 ? <div className="hint">清单中暂无文件。</div> : null}
                   {selectedExportFiles.map((f: any, idx: number) => (
                     <div key={`${String(f?.path || "")}:${idx}`} className="row" style={{ gap: 8, alignItems: "center" }}>
                       <div
@@ -1464,22 +1702,22 @@ export function AgentConsolePanel(props: Props) {
                       >
                         {String(f?.path || "-")}
                       </div>
-                      <div className="small">size={String(f?.size ?? "-")}</div>
+                      <div className="small">大小={String(f?.size ?? "-")}</div>
                       <div className="small">
-                        {pathExistsMap[String(f?.path || "").trim()] === false ? "missing" : pathExistsMap[String(f?.path || "").trim()] === true ? "ok" : "checking..."}
+                        {pathExistsMap[String(f?.path || "").trim()] === false ? "缺失" : pathExistsMap[String(f?.path || "").trim()] === true ? "正常" : "检查中..."}
                       </div>
-                      <button onClick={() => void openExportLogFile(f)}>Open File</button>
+                      <button onClick={() => void openExportLogFile(f)}>打开文件</button>
                     </div>
                   ))}
                 </div>
                 <details style={{ marginTop: 6 }}>
-                  <summary className="small">Fix Wizard</summary>
+                  <summary className="small">修复向导</summary>
                   <div className="small" style={{ marginTop: 6 }}>
-                    fixes: {String(fixPlanItems.length)} · executed:{" "}
+                    修复项：{String(fixPlanItems.length)} · 已执行：{" "}
                     {String(Array.isArray(fixExecuteResult?.executed) ? fixExecuteResult.executed.length : 0)}
                   </div>
                   <div className="scroll" style={{ maxHeight: 160, marginTop: 6 }}>
-                    {fixPlanItems.length === 0 ? <div className="hint">Run "Fix Wizard Plan" to generate fix options.</div> : null}
+                    {fixPlanItems.length === 0 ? <div className="hint">请先运行“修复向导：生成方案”。</div> : null}
                     {fixPlanItems.map((fx: any) => {
                       const fid = String(fx?.fix_id || "").trim();
                       return (
@@ -1492,7 +1730,7 @@ export function AgentConsolePanel(props: Props) {
                             />
                             <span className="small" style={{ fontWeight: 600 }}>{String(fx?.title || fid || "-")}</span>
                           </label>
-                          <div className="small">target={String(fx?.target || "-")} · type={String(fx?.type || "-")} · risk={String(fx?.risk || "-")}</div>
+                          <div className="small">目标={String(fx?.target || "-")} · 类型={String(fx?.type || "-")} · 风险={String(fx?.risk || "-")}</div>
                           <div className="small" style={{ color: "#475569" }}>{String(fx?.reason || "")}</div>
                         </div>
                       );
@@ -1505,7 +1743,7 @@ export function AgentConsolePanel(props: Props) {
             {cleanupResult ? (
               <details>
                 <summary className="small">
-                  cleanup result · missing={String(cleanupResult?.missing_count ?? 0)} · deleted={String(cleanupResult?.deleted_count ?? 0)}
+                  清理结果 · 缺失={String(cleanupResult?.missing_count ?? 0)} · 已删除={String(cleanupResult?.deleted_count ?? 0)}
                 </summary>
                 <div className="row" style={{ gap: 8, marginTop: 6, marginBottom: 6 }}>
                   <button
@@ -1519,14 +1757,14 @@ export function AgentConsolePanel(props: Props) {
                       setCleanupSelectedIds(next);
                     }}
                   >
-                    Select All Missing
+                    全选缺失
                   </button>
-                  <button onClick={() => setCleanupSelectedIds({})}>Clear Selection</button>
-                  <button onClick={() => void runCleanupSelectedMissing()}>Delete Selected Missing</button>
+                  <button onClick={() => setCleanupSelectedIds({})}>清空选择</button>
+                  <button onClick={() => void runCleanupSelectedMissing()}>删除所选缺失</button>
                 </div>
                 <div className="scroll" style={{ maxHeight: 180 }}>
                   {(Array.isArray(cleanupResult?.items) ? cleanupResult.items : []).length === 0 ? (
-                    <div className="hint">No missing records in preview.</div>
+                    <div className="hint">预览中无缺失记录。</div>
                   ) : null}
                   {(Array.isArray(cleanupResult?.items) ? cleanupResult.items : []).map((x: any) => {
                     const xid = String(x?.export_id || "").trim();
@@ -1551,40 +1789,40 @@ export function AgentConsolePanel(props: Props) {
               </details>
             ) : null}
           </div>
-          <div className="small">last plan autobuild</div>
+          <div className="small">最近自动计划</div>
           <div className="agent-audit-row">
-            <div className="small">ok: {String(planAutobuildSummary.ok)}</div>
-            <div className="small">route: {planAutobuildSummary.route || "-"}</div>
-            <div className="small mono">book: {planAutobuildSummary.bookId || "-"}</div>
-            <div className="small mono">volume: {planAutobuildSummary.volumeId || "-"}</div>
-            <div className="small">plan version: {String(planAutobuildSummary.version || "-")}</div>
-            <div className="small">items: {String(planAutobuildSummary.totalItems)}</div>
+            <div className="small">状态（ok）：{String(planAutobuildSummary.ok)}</div>
+            <div className="small">路径（route）：{planAutobuildSummary.route || "-"}</div>
+            <div className="small mono">书籍：{planAutobuildSummary.bookId || "-"}</div>
+            <div className="small mono">卷：{planAutobuildSummary.volumeId || "-"}</div>
+            <div className="small">计划版本：{String(planAutobuildSummary.version || "-")}</div>
+            <div className="small">条目数：{String(planAutobuildSummary.totalItems)}</div>
             <div className="small">
-              combos:{" "}
+              组合：{" "}
               {planAutobuildSummary.comboCovered.length ? planAutobuildSummary.comboCovered.join(", ") : "-"}
             </div>
             {planAutobuildSummary.comboMissing.length ? (
               <div>
                 <div className="small" style={{ color: "#b45309" }}>
-                  missing combos: {planAutobuildSummary.comboMissing.join(", ")}
+                  缺失组合：{planAutobuildSummary.comboMissing.join(", ")}
                 </div>
                 <button onClick={useMissingAsActions} style={{ marginTop: 6 }}>
-                  Use Missing as Actions
+                  将缺失项作为动作
                 </button>
               </div>
             ) : (
-              <div className="small" style={{ color: "#15803d" }}>all required combos covered</div>
+              <div className="small" style={{ color: "#15803d" }}>必需组合已全部覆盖</div>
             )}
           </div>
           <pre>{JSON.stringify(planAutobuildResult, null, 2)}</pre>
-          <div className="small">last apply</div>
+          <div className="small">最近应用</div>
           <pre>{JSON.stringify(applyResult, null, 2)}</pre>
-          <div className="small">audits</div>
+          <div className="small">审计</div>
           <div className="scroll" style={{ maxHeight: 260 }}>
             <div className="small" style={{ marginBottom: 6 }}>
-              showing {visibleAudits.length} / {audits.length}
+              显示 {visibleAudits.length} / {audits.length}
             </div>
-            {visibleAudits.length === 0 ? <div className="hint">No audits / endpoint unsupported.</div> : null}
+            {visibleAudits.length === 0 ? <div className="hint">暂无审计或接口未支持。</div> : null}
             {visibleAudits.map((a: any) => {
               const aid = String(a.audit_id || a.id || "");
               const diff = (a?.after_state?.book_settings_diff || a?.after_state?.chapter_settings_diff || []) as any[];
@@ -1595,16 +1833,16 @@ export function AgentConsolePanel(props: Props) {
                   <div className="small">{String(a.note || "")}</div>
                   {diff.length ? (
                     <details>
-                      <summary className="small">diff ({diff.length})</summary>
+                      <summary className="small">差异（{diff.length}）</summary>
                       <pre className="small">{JSON.stringify(diff, null, 2)}</pre>
                     </details>
                   ) : null}
                   <AuditChangeView audit={a} />
                   <details>
-                    <summary className="small">raw audit</summary>
+                    <summary className="small">原始审计</summary>
                     <pre className="small">{JSON.stringify(a, null, 2)}</pre>
                   </details>
-                  <button onClick={() => void rollback(aid)} disabled={!aid}>Rollback</button>
+                  <button onClick={() => void rollback(aid)} disabled={!aid}>回滚</button>
                 </div>
               );
             })}
@@ -1613,6 +1851,40 @@ export function AgentConsolePanel(props: Props) {
       </div>
 
       <WorkflowRunnerPanel bookId={bookId} chapterId={chapterId} />
+
+      <DeleteConfirmDialog
+        open={!!cleanupConfirmDialog}
+        title={cleanupConfirmDialog?.title || "清理确认"}
+        requireInput={false}
+        targetLabel={cleanupConfirmDialog?.targetLabel || ""}
+        warning={cleanupConfirmDialog?.warning || "该操作不可撤销。"}
+        expectedText={cleanupConfirmDialog?.expectedText || "清理"}
+        value={cleanupConfirmValue}
+        promptLabel={
+          <>
+            请输入校验词 <span className="mono">{cleanupConfirmDialog?.expectedText || "清理"}</span> 以继续
+          </>
+        }
+        placeholder={cleanupConfirmDialog?.expectedText || "清理"}
+        busy={busy === "export:cleanup" || busy === "export:cleanup:selected"}
+        error={cleanupConfirmError}
+        confirmLabel={cleanupConfirmDialog?.kind === "selected" ? "确认删除所选" : "确认清理"}
+        busyLabel="处理中..."
+        onValueChange={(v) => {
+          setCleanupConfirmValue(v);
+          if (cleanupConfirmError) setCleanupConfirmError("");
+        }}
+        onConfirm={() => {
+          void confirmCleanupDialog();
+        }}
+        onCancel={() => {
+          if (busy === "export:cleanup" || busy === "export:cleanup:selected") return;
+          setCleanupConfirmDialog(null);
+          setCleanupConfirmValue("");
+          setCleanupConfirmError("");
+        }}
+        onMismatch={() => setCleanupConfirmError(`输入不匹配，请输入“${cleanupConfirmDialog?.expectedText || "清理"}”`)}
+      />
     </section>
   );
 }

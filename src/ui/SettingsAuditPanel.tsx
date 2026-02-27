@@ -24,12 +24,12 @@ export function SettingsAuditPanel({
 }) {
   return (
     <div className="card" style={{ marginTop: 10 }}>
-      <div className="h2">Settings Audit</div>
+      <div className="h2">设置审计</div>
       <div className="row" style={{ gap: 8 }}>
-        <button onClick={() => onRefresh?.()}>{loading ? "Loading..." : "Refresh"}</button>
+        <button onClick={() => onRefresh?.()}>{loading ? "加载中..." : "刷新"}</button>
       </div>
       <div className="scroll" style={{ maxHeight: 220, marginTop: 10 }}>
-        {items.length === 0 ? <div className="hint">No records.</div> : null}
+        {items.length === 0 ? <div className="hint">暂无记录。</div> : null}
         {items.map((it) => (
           <div key={it.audit_id} className="node-item" style={{ cursor: "default" }}>
             <div style={{ width: "100%" }}>
@@ -44,8 +44,8 @@ export function SettingsAuditPanel({
               {it.note ? <div className="small">{it.note}</div> : null}
               {it.action === "preset_apply" ? (
                 <div className="row" style={{ marginTop: 6 }}>
-                  <button onClick={() => onPreviewRollback?.(it)}>Preview</button>
-                  <button onClick={() => onRollback?.(it.audit_id)}>Rollback</button>
+                  <button onClick={() => onPreviewRollback?.(it)}>预览</button>
+                  <button onClick={() => onRollback?.(it.audit_id)}>回滚</button>
                 </div>
               ) : null}
             </div>

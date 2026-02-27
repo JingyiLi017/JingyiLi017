@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { DiffViewer } from "./DiffViewer";
+import { DeleteConfirmDialog } from "./DeleteConfirmDialog";
 
 type Props = {
   bookId: string;
@@ -23,6 +24,16 @@ export function VersionsPanel({ bookId, chapterId, onPickChapterId, onStatus }: 
   const [lastExportPath, setLastExportPath] = useState("");
   const [busy, setBusy] = useState("");
   const [err, setErr] = useState("");
+  const [draftDeletingId, setDraftDeletingId] = useState("");
+  const [deleteDialog, setDeleteDialog] = useState<{
+    draftId: string;
+    token: string;
+    typedToken: string;
+  } | null>(null);
+  const [deleteError, setDeleteError] = useState("");
+  const [deleteInputShake, setDeleteInputShake] = useState(false);
+  const deleteInputRef = useRef<HTMLInputElement | null>(null);
+  const deleteShakeTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     try {
@@ -47,6 +58,31 @@ export function VersionsPanel({ bookId, chapterId, onPickChapterId, onStatus }: 
       // ignore storage errors
     }
   }, [branchFilter, onlySelectedChain, sortBy, sortDir]);
+
+  useEffect(() => {
+    if (!deleteDialog) {
+      setDeleteError("");
+      setDeleteInputShake(false);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      const el = deleteInputRef.current;
+      if (el) {
+        el.focus();
+        el.select();
+      }
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [deleteDialog]);
+
+  useEffect(() => {
+    return () => {
+      if (deleteShakeTimerRef.current) {
+        window.clearTimeout(deleteShakeTimerRef.current);
+        deleteShakeTimerRef.current = null;
+      }
+    };
+  }, []);
 
   const sortedDesc = useMemo(() => {
     const arr = [...versions];
@@ -149,6 +185,72 @@ export function VersionsPanel({ bookId, chapterId, onPickChapterId, onStatus }: 
     });
   }, [treeRows, branchFilter, onlySelectedChain, selectedChainSet]);
 
+  function formatDeleteError(err: any): string {
+    const payload = err?.payload || {};
+    const detailCode = String(payload?.detail_code || payload?.detail || "").trim().toUpperCase();
+    const detailZh = String(payload?.detail_zh || "").trim();
+    if (detailZh) return detailZh;
+    if (detailCode === "DRAFT_DELETE_LAST_FORBIDDEN") return "当前章节仅剩一个版本，不能删除。";
+    if (detailCode === "DRAFT_DELETE_NO_REPLACEMENT") return "删除失败：没有可切换的替代版本。";
+    if (detailCode === "DRAFT_NOT_FOUND") return "版本不存在或已被删除。";
+    if (detailCode === "DRAFT_NOT_FOUND_FOR_CHAPTER") return "版本不属于当前章节。";
+    const status = Number(err?.status || 0);
+    if (status) return `删除失败（HTTP ${status}）`;
+    return String(err?.message || err || "删除失败");
+  }
+
+  function openDeleteDialog(draftId: string) {
+    const id = String(draftId || "").trim();
+    if (!id) return;
+    const token = id.slice(0, 8);
+    setDeleteError("");
+    setDeleteInputShake(false);
+    setDeleteDialog({ draftId: id, token, typedToken: "" });
+  }
+
+  function markDeleteMismatch() {
+    setDeleteError("输入校验码不一致，请核对后重试。");
+    setDeleteInputShake(true);
+    if (deleteShakeTimerRef.current) {
+      window.clearTimeout(deleteShakeTimerRef.current);
+      deleteShakeTimerRef.current = null;
+    }
+    deleteShakeTimerRef.current = window.setTimeout(() => {
+      setDeleteInputShake(false);
+      deleteShakeTimerRef.current = null;
+    }, 280);
+    const el = deleteInputRef.current;
+    if (el) {
+      el.focus();
+      el.select();
+    }
+  }
+
+  async function confirmDeleteDraftDialog() {
+    if (!deleteDialog) return;
+    setDraftDeletingId(deleteDialog.draftId);
+    setDeleteError("");
+    try {
+      const out = await window.desktopApi.draftDelete({ draft_id: deleteDialog.draftId });
+      const replacementId = String(out?.replacement_draft_id || "");
+      const switched = Boolean(out?.switched);
+      setDeleteDialog(null);
+      await loadVersions();
+      if (leftDraftId === deleteDialog.draftId) setLeftDraftId(replacementId || "");
+      if (rightDraftId === deleteDialog.draftId) setRightDraftId(replacementId || "");
+      if (selectedDraftId === deleteDialog.draftId) setSelectedDraftId(replacementId || "");
+      onStatus?.(
+        switched && replacementId
+          ? `版本已删除，并自动切换到替代版本：${replacementId}`
+          : `版本已删除：${deleteDialog.draftId}`
+      );
+    } catch (e: any) {
+      setDeleteError(formatDeleteError(e));
+    } finally {
+      setDraftDeletingId("");
+    }
+  }
+
   async function loadPairTexts(leftId: string, rightId: string) {
     if (!leftId || !rightId) return;
     setBusy("text:pair");
@@ -190,7 +292,7 @@ export function VersionsPanel({ bookId, chapterId, onPickChapterId, onStatus }: 
           void loadPairTexts(prev, latest);
         }
       }
-      onStatus?.(`Loaded ${Array.isArray(out?.items) ? out.items.length : 0} versions`);
+      onStatus?.(`已加载 ${Array.isArray(out?.items) ? out.items.length : 0} 个版本`);
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -211,7 +313,7 @@ export function VersionsPanel({ bookId, chapterId, onPickChapterId, onStatus }: 
       });
       setSelectedDraftId(draftId);
       await loadVersions();
-      onStatus?.(`Selected draft ${draftId}`);
+      onStatus?.(`已选草稿 ${draftId}`);
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -242,13 +344,13 @@ export function VersionsPanel({ bookId, chapterId, onPickChapterId, onStatus }: 
     const cur = versionById.get(String(draftId || "").trim());
     const parentId = String(cur?.parent_draft_id || "").trim();
     if (!cur || !parentId) {
-      setErr("Parent draft not found for selected node.");
+      setErr("未找到所选节点的父草稿。");
       return;
     }
     setLeftDraftId(parentId);
     setRightDraftId(String(cur?.draft_id || ""));
     await loadPairTexts(parentId, String(cur?.draft_id || ""));
-    onStatus?.(`Compared parent ${parentId} -> child ${String(cur?.draft_id || "")}`);
+    onStatus?.(`已对比父节点 ${parentId} -> 子节点 ${String(cur?.draft_id || "")}`);
   }
 
   function buildDiffMarkdown(): string {
@@ -301,7 +403,7 @@ export function VersionsPanel({ bookId, chapterId, onPickChapterId, onStatus }: 
 
   async function exportDiff(ext: "md" | "txt") {
     if (!leftText && !rightText) {
-      setErr("No diff text loaded.");
+      setErr("未加载差异文本。");
       return;
     }
     setBusy(`export:${ext}`);
@@ -328,7 +430,7 @@ export function VersionsPanel({ bookId, chapterId, onPickChapterId, onStatus }: 
       }
       const p = String(out?.path || "");
       setLastExportPath(p);
-      onStatus?.(`Diff exported: ${p}`);
+      onStatus?.(`差异已导出：${p}`);
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -344,19 +446,19 @@ export function VersionsPanel({ bookId, chapterId, onPickChapterId, onStatus }: 
 
   return (
     <section className="wb-panel" style={{ minHeight: "auto", marginBottom: 10 }}>
-      <h3>Versions</h3>
+      <h3>版本</h3>
       <div className="row" style={{ gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
         <label>
-          chapter_id
-          <input value={chapterId} onChange={(e) => onPickChapterId(e.target.value)} placeholder="uuid" />
+          章节ID（chapter_id）
+          <input value={chapterId} onChange={(e) => onPickChapterId(e.target.value)} placeholder="章节ID（UUID）" />
         </label>
         <button onClick={() => void loadVersions()} disabled={!chapterId || !!busy}>
-          {busy === "load" ? "Loading..." : "Load Versions"}
+          {busy === "load" ? "加载中..." : "加载版本"}
         </button>
         <label>
-          branch
+          分支
           <select value={branchFilter} onChange={(e) => setBranchFilter(e.target.value)}>
-            <option value="all">all</option>
+            <option value="all">全部</option>
             {branchOptions.map((b) => (
               <option key={b} value={b}>
                 {b}
@@ -370,35 +472,36 @@ export function VersionsPanel({ bookId, chapterId, onPickChapterId, onStatus }: 
             checked={onlySelectedChain}
             onChange={(e) => setOnlySelectedChain(e.target.checked)}
           />
-          only selected chain
+          仅显示所选链路
         </label>
         <label>
-          sort by
+          排序字段
           <select value={sortBy} onChange={(e) => setSortBy(e.target.value as any)}>
-            <option value="created_at">created_at</option>
-            <option value="text_length">text_length</option>
+            <option value="created_at">创建时间（created_at）</option>
+            <option value="text_length">文本长度（text_length）</option>
           </select>
         </label>
         <label>
-          dir
+          方向
           <select value={sortDir} onChange={(e) => setSortDir(e.target.value as any)}>
-            <option value="desc">desc</option>
-            <option value="asc">asc</option>
+            <option value="desc">降序（desc）</option>
+            <option value="asc">升序（asc）</option>
           </select>
         </label>
       </div>
       {err ? <div className="hint" style={{ color: "#7f1d1d", marginTop: 8 }}>{err}</div> : null}
+      {deleteError && !deleteDialog ? <div className="hint" style={{ color: "#7f1d1d", marginTop: 8 }}>{deleteError}</div> : null}
       <div className="scroll" style={{ maxHeight: 260, marginTop: 8 }}>
         <table className="table" style={{ width: "100%" }}>
           <thead>
             <tr>
-              <th>variant</th>
-              <th>branch</th>
-              <th>draft_id</th>
-              <th>parent</th>
-              <th>len</th>
-              <th>selected</th>
-              <th>action</th>
+              <th>变体</th>
+              <th>分支</th>
+              <th>草稿ID</th>
+              <th>父节点</th>
+              <th>长度</th>
+              <th>已选</th>
+              <th>操作</th>
             </tr>
           </thead>
           <tbody>
@@ -414,7 +517,7 @@ export function VersionsPanel({ bookId, chapterId, onPickChapterId, onStatus }: 
                         className="small"
                         style={{ marginRight: 6, padding: "0 6px" }}
                         onClick={() => setCollapsedById((m) => ({ ...m, [did]: !m[did] }))}
-                        title={collapsedById[did] ? "Expand children" : "Collapse children"}
+                        title={collapsedById[did] ? "展开子节点" : "折叠子节点"}
                       >
                         {collapsedById[did] ? "+" : "-"}
                       </button>
@@ -430,10 +533,10 @@ export function VersionsPanel({ bookId, chapterId, onPickChapterId, onStatus }: 
                   <td className="mono">{did}</td>
                   <td className="mono">{String(d?.parent_draft_id || "-")}</td>
                   <td>{Number(d?.text_length || 0)}</td>
-                  <td>{active ? "yes" : "no"}</td>
+                  <td>{active ? "是" : "否"}</td>
                   <td>
                     <button onClick={() => void selectDraft(did)} disabled={!!busy || active}>
-                      {active ? "Selected" : "Select"}
+                      {active ? "已选中" : "选中"}
                     </button>
                     <button onClick={() => setLeftDraftId(did)} style={{ marginLeft: 6 }} disabled={leftDraftId === did}>
                       L
@@ -445,9 +548,17 @@ export function VersionsPanel({ bookId, chapterId, onPickChapterId, onStatus }: 
                       onClick={() => void compareWithParent(did)}
                       style={{ marginLeft: 6 }}
                       disabled={!!busy || !hasParent}
-                      title={hasParent ? "Load parent->current for diff" : "No parent"}
+                      title={hasParent ? "加载父节点对比" : "无父节点"}
                     >
-                      Parent
+                      父节点
+                    </button>
+                    <button
+                      className="danger"
+                      onClick={() => openDeleteDialog(did)}
+                      style={{ marginLeft: 6 }}
+                      disabled={!!busy || draftDeletingId === did}
+                    >
+                      {draftDeletingId === did ? "删除中..." : "删除"}
                     </button>
                   </td>
                 </tr>
@@ -455,25 +566,25 @@ export function VersionsPanel({ bookId, chapterId, onPickChapterId, onStatus }: 
             })}
           </tbody>
         </table>
-        {sortedDesc.length === 0 ? <div className="hint">No versions loaded.</div> : null}
-        {sortedDesc.length > 0 && filteredRows.length === 0 ? <div className="hint">No rows match current filters.</div> : null}
+        {sortedDesc.length === 0 ? <div className="hint">暂无版本。</div> : null}
+        {sortedDesc.length > 0 && filteredRows.length === 0 ? <div className="hint">当前筛选无结果。</div> : null}
       </div>
       <div className="job-grid" style={{ marginTop: 8 }}>
         <div>
           <div className="row" style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-            <strong>Left</strong>
+            <strong>左侧</strong>
             <code className="small">{leftDraftId || "-"}</code>
             <button onClick={() => void loadDraftText(leftDraftId, "left")} disabled={!leftDraftId || !!busy}>
-              Load Left Text
+              加载左侧文本
             </button>
           </div>
         </div>
         <div>
           <div className="row" style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-            <strong>Right</strong>
+            <strong>右侧</strong>
             <code className="small">{rightDraftId || "-"}</code>
             <button onClick={() => void loadDraftText(rightDraftId, "right")} disabled={!rightDraftId || !!busy}>
-              Load Right Text
+              加载右侧文本
             </button>
           </div>
         </div>
@@ -483,27 +594,27 @@ export function VersionsPanel({ bookId, chapterId, onPickChapterId, onStatus }: 
           onClick={() => void loadPairTexts(leftDraftId, rightDraftId)}
           disabled={!leftDraftId || !rightDraftId || !!busy}
         >
-          Load Left/Right Pair
+          加载左右对
         </button>
         <button onClick={() => void exportDiff("md")} disabled={(!leftText && !rightText) || !!busy}>
-          Export Diff .md
+          导出差异 .md
         </button>
         <button onClick={() => void exportDiff("txt")} disabled={(!leftText && !rightText) || !!busy}>
-          Export Diff .txt
+          导出差异 .txt
         </button>
         <button onClick={() => void openExportFolder()} disabled={!lastExportPath}>
-          Open Export File
+          打开导出文件
         </button>
         <button
           onClick={() => void compareWithParent(rightDraftId || selectedDraftId)}
           disabled={!(rightDraftId || selectedDraftId) || !!busy}
         >
-          Compare Selected/Right With Parent
+          与父节点对比（已选/右侧）
         </button>
       </div>
       {lastExportPath ? (
         <div className="small mono" style={{ marginTop: 6 }}>
-          exported: {lastExportPath}
+          导出文件：{lastExportPath}
         </div>
       ) : null}
       {(leftText || rightText) ? (
@@ -512,9 +623,39 @@ export function VersionsPanel({ bookId, chapterId, onPickChapterId, onStatus }: 
         </div>
       ) : null}
       <details style={{ marginTop: 8 }}>
-        <summary>raw versions json</summary>
+        <summary>原始版本 JSON</summary>
         <pre>{JSON.stringify(sortedDesc, null, 2)}</pre>
       </details>
+
+      <DeleteConfirmDialog
+        open={!!deleteDialog}
+        title="删除版本确认"
+        requireInput={false}
+        targetLabel={deleteDialog ? <>草稿ID：<code>{deleteDialog.draftId}</code></> : null}
+        warning="如果删除的是当前选中/激活版本，系统会自动切换到其他版本后再删除。"
+        promptLabel={deleteDialog ? <>请输入校验码 <strong>{deleteDialog.token}</strong> 以确认删除</> : "请输入校验码以确认删除"}
+        expectedText={String(deleteDialog?.token || "")}
+        value={String(deleteDialog?.typedToken || "")}
+        placeholder={String(deleteDialog?.token || "")}
+        busy={!!draftDeletingId}
+        error={deleteError}
+        inputRef={deleteInputRef}
+        inputClassName={deleteInputShake ? "shake-once" : ""}
+        confirmLabel="确认删除"
+        busyLabel="删除中..."
+        onValueChange={(nextValue) => {
+          setDeleteDialog((prev) => (prev ? { ...prev, typedToken: nextValue } : prev));
+          if (deleteError) setDeleteError("");
+          if (deleteInputShake) setDeleteInputShake(false);
+        }}
+        onConfirm={() => void confirmDeleteDraftDialog()}
+        onCancel={() => {
+          setDeleteError("");
+          setDeleteInputShake(false);
+          setDeleteDialog(null);
+        }}
+        onMismatch={markDeleteMismatch}
+      />
     </section>
   );
 }

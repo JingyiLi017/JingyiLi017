@@ -13,6 +13,17 @@ function statusClass(status: string): string {
   return "idle";
 }
 
+function formatStepStatus(status: string): string {
+  const s = String(status || "").toLowerCase();
+  const labels: Record<string, string> = {
+    succeeded: "已完成",
+    failed: "失败",
+    running: "运行中",
+    idle: "空闲",
+  };
+  return labels[s] ? `${labels[s]}(${status})` : status;
+}
+
 function hasEventsJsonError(step: any): boolean {
   const msg = String(step?.error?.message || "").toUpperCase();
   return msg.includes("EVENTS_JSON");
@@ -24,7 +35,7 @@ export function WorkflowRunnerPanel({ bookId, chapterId }: Props) {
   const [wfRunResult, setWfRunResult] = useState<any>(null);
   const [draftRunResult, setDraftRunResult] = useState<any>(null);
   const [wfRunDetail, setWfRunDetail] = useState<any>(null);
-  const [wfReason, setWfReason] = useState("rollback from desktop");
+  const [wfReason, setWfReason] = useState("桌面端回滚");
   const [selectedStepIndex, setSelectedStepIndex] = useState<number>(-1);
   const [rewriteLevel, setRewriteLevel] = useState<"L1" | "L2" | "L3">("L1");
   const [rewriteResult, setRewriteResult] = useState<any>(null);
@@ -32,6 +43,18 @@ export function WorkflowRunnerPanel({ bookId, chapterId }: Props) {
   const [draftsList, setDraftsList] = useState<any>(null);
   const [busy, setBusy] = useState("");
   const [err, setErr] = useState("");
+  const busyLabels: Record<string, string> = {
+    "workflow:definition": "加载定义",
+    "workflow:run": "运行流程",
+    "draft:run": "运行草稿API(Draft API)",
+    "workflow:get-run": "获取运行详情",
+    "workflow:rollback": "回滚流程",
+    "drafts:list": "加载草稿列表",
+    "rewrite:run": "执行改写",
+    "rewrite:accept": "接纳改写",
+    "drafts:activate": "设为当前草稿",
+  };
+  const busyLabel = busy ? (busyLabels[busy] ? `${busyLabels[busy]}(${busy})` : busy) : "空闲";
 
   const steps = useMemo(() => ((wfRunDetail?.steps || []) as any[]), [wfRunDetail]);
   const stepByNode = useMemo(() => {
@@ -94,16 +117,16 @@ export function WorkflowRunnerPanel({ bookId, chapterId }: Props) {
       const evidence = String(ex?.evidence || "").trim();
       const hasRequired = Array.isArray(t?.evidence_required) ? t.evidence_required.length > 0 : false;
       let status: "green" | "yellow" | "red" = "red";
-      let statusLabel = "missing";
+      let statusLabel = "缺失";
       if (ex && evidence) {
         status = "green";
-        statusLabel = "evidence ok";
+        statusLabel = "证据充分";
       } else if (ex && !evidence) {
         status = "yellow";
-        statusLabel = "executed, weak evidence";
+        statusLabel = "已执行，证据不足";
       } else if (!hasRequired) {
         status = "yellow";
-        statusLabel = "no evidence_required";
+        statusLabel = "未要求证据(evidence_required)";
       }
       return {
         taskId,
@@ -262,7 +285,7 @@ export function WorkflowRunnerPanel({ bookId, chapterId }: Props) {
   async function runRewrite() {
     if (!bookId || !chapterId) return;
     if (!sourceDraftId && !sourceChapterText) {
-      setErr("No source draft/text found from latest workflow run.");
+      setErr("未在最近一次流程运行中找到源草稿或源文本。");
       return;
     }
     setBusy("rewrite:run");
@@ -294,7 +317,7 @@ export function WorkflowRunnerPanel({ bookId, chapterId }: Props) {
     const rewrittenText = String(rewriteResult?.rewritten_text || "").trim();
     const srcId = String(rewriteResult?.source_draft_id || sourceDraftId || "").trim();
     if (!rewrittenText || !srcId) {
-      setErr("Rewrite result or source draft id is missing.");
+      setErr("改写结果或源草稿ID缺失。");
       return;
     }
     setBusy("rewrite:accept");
@@ -346,44 +369,45 @@ export function WorkflowRunnerPanel({ bookId, chapterId }: Props) {
   return (
     <div className="card" style={{ marginTop: 10 }}>
       <div className="row" style={{ marginBottom: 6 }}>
-        <h4 style={{ margin: 0 }}>Workflow Runner</h4>
-        <span className="small">draft_runner_v1 · {busy || "idle"}</span>
+        <h4 style={{ margin: 0 }}>流程运行器</h4>
+        <span className="small">流程ID(draft_runner_v1) · {busyLabel}</span>
       </div>
       <div className="row" style={{ gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
         <label className="agent-checkbox">
           <input type="checkbox" checked={wfDryRun} onChange={(e) => setWfDryRun(e.target.checked)} />
-          dry_run
+          演练模式(dry_run)
         </label>
-        <button onClick={() => void loadWorkflowDefinition()}>Load Definition</button>
-        <button onClick={() => void runWorkflow()} disabled={!bookId || !chapterId}>Run Workflow</button>
-        <button onClick={() => void runDraftApi()} disabled={!bookId || !chapterId}>Run Draft API</button>
-        <button onClick={() => void loadWorkflowRunDetail()} disabled={!wfRunResult?.run_id}>Refresh Run Detail</button>
+        <button onClick={() => void loadWorkflowDefinition()}>加载定义</button>
+        <button onClick={() => void runWorkflow()} disabled={!bookId || !chapterId}>运行流程</button>
+        <button onClick={() => void runDraftApi()} disabled={!bookId || !chapterId}>运行草稿API(Draft API)</button>
+        <button onClick={() => void loadWorkflowRunDetail()} disabled={!wfRunResult?.run_id}>刷新运行详情</button>
         <label>
-          rollback reason
+          回滚原因
           <input value={wfReason} onChange={(e) => setWfReason(e.target.value)} />
         </label>
-        <button onClick={() => void rollbackWorkflowRun()} disabled={!wfRunResult?.run_id || !!wfDryRun}>Rollback Run</button>
+        <button onClick={() => void rollbackWorkflowRun()} disabled={!wfRunResult?.run_id || !!wfDryRun}>回滚本次运行</button>
       </div>
       {err ? <div className="small" style={{ color: "#b91c1c", marginTop: 6 }}>{err}</div> : null}
 
       {steps.length > 0 ? (
         <div style={{ marginTop: 10 }}>
-          <div className="small">Step Timeline</div>
+          <div className="small">步骤时间线</div>
           <div className="wf-timeline">
             {steps.map((s: any, idx: number) => {
               const nid = String(s?.node_id || `step-${idx}`);
-              const st = String(s?.status || "idle");
+              const stRaw = String(s?.status || "idle");
+              const stLabel = formatStepStatus(stRaw);
               return (
                 <button
                   key={`${nid}-${idx}`}
                   type="button"
-                  className={`wf-step ${statusClass(st)} ${selectedStepIndex === idx ? "selected" : ""}`}
-                  title={`${nid} · ${st}`}
+                  className={`wf-step ${statusClass(stRaw)} ${selectedStepIndex === idx ? "selected" : ""}`}
+                  title={`${nid} · ${stLabel}`}
                   onClick={() => setSelectedStepIndex(idx)}
                 >
                   <div className="wf-step-index">{idx + 1}</div>
                   <div className="wf-step-name">{nid}</div>
-                  <div className="wf-step-status">{st}</div>
+                  <div className="wf-step-status">{stLabel}</div>
                   {hasEventsJsonError(s) ? <div className="wf-step-badge">EVENTS_JSON</div> : null}
                 </button>
               );
@@ -392,20 +416,20 @@ export function WorkflowRunnerPanel({ bookId, chapterId }: Props) {
           {selectedStep ? (
             <div style={{ marginTop: 8 }}>
               <div className="small">
-                Selected Step: <span className="mono">{String(selectedStep?.node_id || "-")}</span> ·{" "}
-                <span className="mono">{String(selectedStep?.status || "-")}</span>
+                当前步骤：<span className="mono">{String(selectedStep?.node_id || "-")}</span> ·{" "}
+                <span className="mono">{formatStepStatus(String(selectedStep?.status || "-"))}</span>
               </div>
               <div className="agent-grid" style={{ marginTop: 6 }}>
                 <div className="agent-col">
-                  <div className="small">input</div>
+                  <div className="small">输入</div>
                   <pre>{JSON.stringify(selectedStep?.input ?? {}, null, 2)}</pre>
                 </div>
                 <div className="agent-col">
-                  <div className="small">output</div>
+                  <div className="small">输出</div>
                   <pre>{JSON.stringify(selectedStep?.output ?? {}, null, 2)}</pre>
                 </div>
                 <div className="agent-col">
-                  <div className="small">error / metrics</div>
+                  <div className="small">错误/指标</div>
                   <pre>{JSON.stringify({ error: selectedStep?.error ?? null, metrics: selectedStep?.metrics ?? {} }, null, 2)}</pre>
                 </div>
               </div>
@@ -415,21 +439,21 @@ export function WorkflowRunnerPanel({ bookId, chapterId }: Props) {
       ) : null}
 
       <div style={{ marginTop: 10 }}>
-        <div className="small">Pacer & Task Intent QA</div>
+        <div className="small">节奏器(Pacer)与任务意图校验</div>
         <div className="agent-grid" style={{ marginTop: 6 }}>
           <div className="agent-col">
-            <div className="small">pacer</div>
+            <div className="small">节奏器</div>
             <pre>{JSON.stringify(pacingData ?? {}, null, 2)}</pre>
           </div>
           <div className="agent-col">
             <div className="small">
-              evidence check: total={evidenceSummary.total} ·
-              <span style={{ color: "#15803d" }}> green={evidenceSummary.green}</span> ·
-              <span style={{ color: "#b45309" }}> yellow={evidenceSummary.yellow}</span> ·
-              <span style={{ color: "#b91c1c" }}> red={evidenceSummary.red}</span>
+              证据检查：总数={evidenceSummary.total} ·
+              <span style={{ color: "#15803d" }}> 绿={evidenceSummary.green}</span> ·
+              <span style={{ color: "#b45309" }}> 黄={evidenceSummary.yellow}</span> ·
+              <span style={{ color: "#b91c1c" }}> 红={evidenceSummary.red}</span>
             </div>
             <div className="scroll" style={{ maxHeight: 260 }}>
-              {evidenceRows.length === 0 ? <div className="hint">No task intent rows found in run detail.</div> : null}
+              {evidenceRows.length === 0 ? <div className="hint">运行详情中未找到任务意图记录。</div> : null}
               {evidenceRows.map((r) => (
                 <div key={r.taskId || `${r.type}-${r.intent}`} className="agent-audit-row">
                   <div className="small mono">{r.taskId || "-"}</div>
@@ -442,18 +466,18 @@ export function WorkflowRunnerPanel({ bookId, chapterId }: Props) {
                   </div>
                   {r.intent ? <div className="small">{r.intent}</div> : null}
                   {r.evidenceRequired.length ? (
-                    <div className="small">required: {r.evidenceRequired.join(" | ")}</div>
+                    <div className="small">要求：{r.evidenceRequired.join(" | ")}</div>
                   ) : null}
                   {r.bannedMoves.length ? (
-                    <div className="small">banned: {r.bannedMoves.join(" | ")}</div>
+                    <div className="small">禁用：{r.bannedMoves.join(" | ")}</div>
                   ) : null}
-                  {r.evidence ? <div className="small">evidence: {r.evidence}</div> : null}
+                  {r.evidence ? <div className="small">证据：{r.evidence}</div> : null}
                 </div>
               ))}
             </div>
           </div>
           <div className="agent-col">
-            <div className="small">executed_tasks</div>
+            <div className="small">已执行任务(executed_tasks)</div>
             <pre>{JSON.stringify(executedTasks, null, 2)}</pre>
           </div>
         </div>
@@ -461,52 +485,52 @@ export function WorkflowRunnerPanel({ bookId, chapterId }: Props) {
 
       <div style={{ marginTop: 10 }}>
         <div className="row" style={{ marginBottom: 6 }}>
-          <div className="small">De-AI Rewrite (optional)</div>
+          <div className="small">去AI改写（可选）</div>
           <label>
-            level
+            强度
             <select value={rewriteLevel} onChange={(e) => setRewriteLevel(String(e.target.value) as any)}>
               <option value="L1">L1 轻微润色</option>
               <option value="L2">L2 强去味</option>
               <option value="L3">L3 风格化重写</option>
             </select>
           </label>
-          <button onClick={() => void runRewrite()} disabled={!bookId || !chapterId}>Run Rewrite</button>
-          <button onClick={() => void acceptRewrite()} disabled={!rewriteResult?.rewritten_text}>Accept Rewrite</button>
-          <button onClick={rejectRewrite} disabled={!rewriteResult}>Reject</button>
-          <button onClick={() => void loadChapterDrafts()} disabled={!chapterId}>Refresh Drafts</button>
+          <button onClick={() => void runRewrite()} disabled={!bookId || !chapterId}>执行改写</button>
+          <button onClick={() => void acceptRewrite()} disabled={!rewriteResult?.rewritten_text}>接纳改写</button>
+          <button onClick={rejectRewrite} disabled={!rewriteResult}>拒绝</button>
+          <button onClick={() => void loadChapterDrafts()} disabled={!chapterId}>刷新草稿</button>
         </div>
         <div className="agent-grid">
           <div className="agent-col">
-            <div className="small">rewrite result</div>
+            <div className="small">改写结果</div>
             <pre>{JSON.stringify(rewriteResult, null, 2)}</pre>
           </div>
           <div className="agent-col">
-            <div className="small">accept result</div>
+            <div className="small">接纳结果</div>
             <pre>{JSON.stringify(rewriteAcceptResult, null, 2)}</pre>
           </div>
           <div className="agent-col">
-            <div className="small">diff preview</div>
+            <div className="small">差异预览</div>
             <div className="scroll" style={{ maxHeight: 260 }}>
               {Array.isArray(rewriteResult?.diff?.ops) && rewriteResult.diff.ops.length ? (
                 rewriteResult.diff.ops.slice(0, 30).map((op: any, idx: number) => (
                   <div key={idx} className="agent-audit-row">
                     <div className="small"><strong>{String(op?.op || "-")}</strong></div>
                     <div className="small mono">a[{String((op?.a_idx || []).join(", "))}] → b[{String((op?.b_idx || []).join(", "))}]</div>
-                    <div className="small">before: {Array.isArray(op?.a_text) ? op.a_text.join(" / ").slice(0, 180) : "-"}</div>
-                    <div className="small">after: {Array.isArray(op?.b_text) ? op.b_text.join(" / ").slice(0, 180) : "-"}</div>
+                    <div className="small">改写前：{Array.isArray(op?.a_text) ? op.a_text.join(" / ").slice(0, 180) : "-"}</div>
+                    <div className="small">改写后：{Array.isArray(op?.b_text) ? op.b_text.join(" / ").slice(0, 180) : "-"}</div>
                   </div>
                 ))
               ) : (
-                <div className="hint">No diff ops</div>
+                <div className="hint">暂无差异操作</div>
               )}
             </div>
           </div>
         </div>
         <div style={{ marginTop: 8 }}>
-          <div className="small">chapter drafts</div>
+          <div className="small">章节草稿</div>
           <div className="scroll" style={{ maxHeight: 220 }}>
             {!Array.isArray(draftsList?.items) || draftsList.items.length === 0 ? (
-              <div className="hint">No drafts found.</div>
+              <div className="hint">暂无草稿。</div>
             ) : (
               draftsList.items.map((d: any) => {
                 const did = String(d?.draft_id || "");
@@ -514,14 +538,14 @@ export function WorkflowRunnerPanel({ bookId, chapterId }: Props) {
                 return (
                   <div key={did} className="agent-audit-row">
                     <div className="small mono">{did || "-"}</div>
-                    <div className="small">variant: {String(d?.variant || "-")}</div>
-                    <div className="small">rewrite: {String(d?.rewrite_level || "-")}</div>
-                    <div className="small">len: {String(d?.text_length || "-")}</div>
+                    <div className="small">版本(variant)：{String(d?.variant || "-")}</div>
+                    <div className="small">改写级别(rewrite)：{String(d?.rewrite_level || "-")}</div>
+                    <div className="small">字数(len)：{String(d?.text_length || "-")}</div>
                     <div className="small" style={{ color: isActive ? "#15803d" : "#6b7280" }}>
-                      {isActive ? "active" : "inactive"}
+                      {isActive ? "当前(active)" : "非当前(inactive)"}
                     </div>
                     <button onClick={() => void activateDraft(did)} disabled={!did || isActive}>
-                      Set Active
+                      设为当前
                     </button>
                   </div>
                 );
@@ -533,19 +557,19 @@ export function WorkflowRunnerPanel({ bookId, chapterId }: Props) {
 
       <div className="agent-grid" style={{ marginTop: 8 }}>
         <div className="agent-col">
-          <div className="small">definition</div>
+          <div className="small">流程定义</div>
           <pre>{JSON.stringify(wfDef, null, 2)}</pre>
         </div>
         <div className="agent-col">
-          <div className="small">draft run result</div>
+          <div className="small">草稿运行结果</div>
           <pre>{JSON.stringify(draftRunResult, null, 2)}</pre>
         </div>
         <div className="agent-col">
-          <div className="small">run result</div>
+          <div className="small">运行结果</div>
           <pre>{JSON.stringify(wfRunResult, null, 2)}</pre>
         </div>
         <div className="agent-col">
-          <div className="small">run detail</div>
+          <div className="small">运行详情</div>
           <pre>{JSON.stringify(wfRunDetail, null, 2)}</pre>
         </div>
       </div>

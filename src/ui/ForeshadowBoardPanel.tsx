@@ -14,6 +14,15 @@ export function ForeshadowBoardPanel({ baseUrl, bookId, chapterId, onStatus, onO
   const [lastTextVerId, setLastTextVerId] = useState("");
   const [suggestions, setSuggestions] = useState<any[]>([]);
   const [selectedKeys, setSelectedKeys] = useState<Record<string, boolean>>({});
+  const eventTypeLabels: Record<string, string> = {
+    payoff: "回收",
+    drop: "丢弃",
+    retcon: "修补",
+  };
+  const formatEventType = (value: string) => {
+    const hit = eventTypeLabels[value];
+    return hit ? `${hit}(${value})` : value;
+  };
 
   const chapterNo = useMemo(() => {
     const raw = board?.chapter_no ?? 0;
@@ -46,7 +55,7 @@ export function ForeshadowBoardPanel({ baseUrl, bookId, chapterId, onStatus, onO
       });
       if (!res.ok) throw new Error(`AUTO_CREATE_VOLUMES_FAILED:${res.status}`);
       const out = await res.json();
-      onStatus(`Volumes auto-created: ${String(out.created || 0)}`);
+      onStatus(`分卷已自动创建：${String(out.created || 0)}`);
     } catch (err: any) {
       onStatus(String(err?.message || err));
     }
@@ -77,7 +86,7 @@ export function ForeshadowBoardPanel({ baseUrl, bookId, chapterId, onStatus, onO
       });
       if (!res.ok) throw new Error(`FORESHADOW_PLAN_FAILED:${res.status}`);
       const out = await res.json();
-      onStatus(`Foreshadow planned: create=${(out.created || []).length}`);
+      onStatus(`伏笔已规划：新建 ${(out.created || []).length} 条`);
       await loadBoard();
     } catch (err: any) {
       onStatus(String(err?.message || err));
@@ -93,7 +102,7 @@ export function ForeshadowBoardPanel({ baseUrl, bookId, chapterId, onStatus, onO
         body: JSON.stringify({ chapter_id: chapterId, event_type: eventType, note: "from board panel" }),
       });
       if (!res.ok) throw new Error(`FORESHADOW_EVENT_FAILED:${res.status}`);
-      onStatus(`Foreshadow ${eventType}: ${foreshadowId.slice(0, 8)}`);
+      onStatus(`伏笔${formatEventType(eventType)}：${foreshadowId.slice(0, 8)}`);
       await loadBoard();
     } catch (err: any) {
       onStatus(String(err?.message || err));
@@ -122,7 +131,7 @@ export function ForeshadowBoardPanel({ baseUrl, bookId, chapterId, onStatus, onO
         if (key !== ":") checked[key] = true;
       }
       setSelectedKeys(checked);
-      onStatus(`Foreshadow suggestions: ${next.length}`);
+      onStatus(`伏笔建议：${next.length} 条`);
     } catch (err: any) {
       onStatus(String(err?.message || err));
     }
@@ -132,7 +141,7 @@ export function ForeshadowBoardPanel({ baseUrl, bookId, chapterId, onStatus, onO
     if (!chapterId) return;
     const picked = suggestions.filter((s) => selectedKeys[`${String(s.foreshadow_id || "")}:${String(s.event_type || "")}`]);
     if (picked.length === 0) {
-      onStatus("No foreshadow suggestion selected");
+      onStatus("未选择伏笔建议");
       return;
     }
     try {
@@ -153,7 +162,7 @@ export function ForeshadowBoardPanel({ baseUrl, bookId, chapterId, onStatus, onO
       if (!res.ok) throw new Error(`FORESHADOW_CONFIRM_FAILED:${res.status}`);
       const out = await res.json();
       const applied = Array.isArray(out.applied) ? out.applied.length : 0;
-      onStatus(`Foreshadow confirmed: ${applied}`);
+      onStatus(`伏笔确认完成：${applied} 条`);
       await loadBoard();
     } catch (err: any) {
       onStatus(String(err?.message || err));
@@ -176,30 +185,30 @@ export function ForeshadowBoardPanel({ baseUrl, bookId, chapterId, onStatus, onO
 
   return (
     <div style={{ marginTop: 10 }}>
-      <div className="h2">Foreshadow Board</div>
+      <div className="h2">伏笔看板</div>
       <div className="row" style={{ gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-        <button onClick={() => void loadBoard()} disabled={!bookId || loading}>Refresh</button>
-        <button onClick={() => void autoCreateVolumes()} disabled={!bookId}>Auto Create Volumes</button>
-        <button onClick={() => void autoPlanForChapter()} disabled={!chapterId}>Auto Plan For Chapter</button>
-        <button onClick={() => void suggestEvents()} disabled={!chapterId}>Suggest Events</button>
-        <button onClick={() => void confirmSelected()} disabled={!chapterId || suggestions.length === 0}>Confirm Selected</button>
-        <button onClick={() => onOpenTrace?.(lastTextVerId)} disabled={!lastTextVerId || !onOpenTrace}>Open Last Trace</button>
-        <div className="small mono">open={openItems.length} · due={dueSoon.length} · overdue={overdue.length} · closed={closed.length}</div>
+        <button onClick={() => void loadBoard()} disabled={!bookId || loading}>刷新</button>
+        <button onClick={() => void autoCreateVolumes()} disabled={!bookId}>自动创建分卷</button>
+        <button onClick={() => void autoPlanForChapter()} disabled={!chapterId}>自动规划本章</button>
+        <button onClick={() => void suggestEvents()} disabled={!chapterId}>生成事件建议</button>
+        <button onClick={() => void confirmSelected()} disabled={!chapterId || suggestions.length === 0}>确认所选</button>
+        <button onClick={() => onOpenTrace?.(lastTextVerId)} disabled={!lastTextVerId || !onOpenTrace}>打开最近追踪</button>
+        <div className="small mono">开放={openItems.length} · 即将到期={dueSoon.length} · 已逾期={overdue.length} · 已关闭={closed.length}</div>
       </div>
 
       {suggestions.length > 0 ? (
         <div className="card" style={{ marginTop: 8 }}>
-          <div className="h2">Suggested Events</div>
-          <div className="small mono">text_ver_id={lastTextVerId ? String(lastTextVerId).slice(0, 8) : "-"}</div>
+          <div className="h2">建议事件</div>
+          <div className="small mono">文本版本ID(text_ver_id)={lastTextVerId ? String(lastTextVerId).slice(0, 8) : "-"}</div>
           <div className="scroll" style={{ maxHeight: 160, marginTop: 6 }}>
             <table className="compare-table">
               <thead>
                 <tr>
                   <th></th>
-                  <th>title</th>
-                  <th>event</th>
-                  <th>status</th>
-                  <th>source</th>
+                  <th>标题</th>
+                  <th>事件</th>
+                  <th>状态</th>
+                  <th>来源</th>
                 </tr>
               </thead>
               <tbody>
@@ -215,7 +224,7 @@ export function ForeshadowBoardPanel({ baseUrl, bookId, chapterId, onStatus, onO
                         />
                       </td>
                       <td>{String(s.title || "").slice(0, 28) || String(s.foreshadow_id || "").slice(0, 8)}</td>
-                      <td className="mono">{String(s.event_type || "-")}</td>
+                      <td className="mono">{formatEventType(String(s.event_type || "-"))}</td>
                       <td className="mono">{String(s.current_status || "-")}</td>
                       <td className="mono">{String(s.source || "-")}</td>
                     </tr>
@@ -229,10 +238,10 @@ export function ForeshadowBoardPanel({ baseUrl, bookId, chapterId, onStatus, onO
 
       <div className="row" style={{ gap: 10, alignItems: "stretch", marginTop: 8 }}>
         <div className="card" style={{ flex: "1 1 45%" }}>
-          <div className="h2">Open</div>
+          <div className="h2">开放项</div>
           <div className="scroll" style={{ maxHeight: 220 }}>
             {openItems.length === 0 ? (
-              <div className="hint">No open foreshadow.</div>
+              <div className="hint">暂无开放伏笔。</div>
             ) : (
               openItems.map((x: any) => (
                 <div key={String(x.foreshadow_id)} className="node-item" style={{ cursor: "default", marginBottom: 6 }}>
@@ -242,13 +251,13 @@ export function ForeshadowBoardPanel({ baseUrl, bookId, chapterId, onStatus, onO
                       <span className="chip">{String(x.status || "-")}</span>
                     </div>
                     <div className="small mono">
-                      {String(x.foreshadow_id || "").slice(0, 8)} · scope={String(x.scope || "-")} · p={String(x.priority ?? "-")}
+                      {String(x.foreshadow_id || "").slice(0, 8)} · 范围(scope)={String(x.scope || "-")} · 优先级(p)={String(x.priority ?? "-")}
                     </div>
-                    <div className="small mono">planned_payoff_ch={String(x.planned_payoff_chapter_no || "-")}</div>
+                    <div className="small mono">计划回收章节(planned_payoff_ch)={String(x.planned_payoff_chapter_no || "-")}</div>
                     <div className="row" style={{ gap: 6, marginTop: 4 }}>
-                      <button onClick={() => void markEvent(String(x.foreshadow_id), "payoff")} disabled={!chapterId}>Mark Payoff</button>
-                      <button onClick={() => void markEvent(String(x.foreshadow_id), "retcon")} disabled={!chapterId}>Retcon</button>
-                      <button onClick={() => void markEvent(String(x.foreshadow_id), "drop")} disabled={!chapterId}>Drop</button>
+                      <button onClick={() => void markEvent(String(x.foreshadow_id), "payoff")} disabled={!chapterId}>标记回收</button>
+                      <button onClick={() => void markEvent(String(x.foreshadow_id), "retcon")} disabled={!chapterId}>修补(retcon)</button>
+                      <button onClick={() => void markEvent(String(x.foreshadow_id), "drop")} disabled={!chapterId}>丢弃(drop)</button>
                     </div>
                   </div>
                 </div>
@@ -258,26 +267,26 @@ export function ForeshadowBoardPanel({ baseUrl, bookId, chapterId, onStatus, onO
         </div>
 
         <div className="card" style={{ flex: "1 1 55%" }}>
-          <div className="h2">Due / Overdue</div>
-          <div className="small mono">chapter_no={chapterNo || "-"}</div>
+          <div className="h2">即将到期 / 已逾期</div>
+          <div className="small mono">章节号(chapter_no)={chapterNo || "-"}</div>
           <div className="scroll" style={{ maxHeight: 220, marginTop: 6 }}>
             {(dueSoon.length + overdue.length) === 0 ? (
-              <div className="hint">No due/overdue items.</div>
+              <div className="hint">暂无即将到期或已逾期条目。</div>
             ) : (
               <>
                 {dueSoon.map((x: any) => (
                   <div key={`due-${String(x.foreshadow_id)}`} className="node-item" style={{ cursor: "default", marginBottom: 6 }}>
                     <div style={{ width: "100%" }}>
-                      <div className="row"><strong>{String(x.title || "-")}</strong><span className="chip">due_soon</span></div>
-                      <div className="small mono">payoff_ch={String(x.planned_payoff_chapter_no || "-")}</div>
+                      <div className="row"><strong>{String(x.title || "-")}</strong><span className="chip">即将到期(due_soon)</span></div>
+                      <div className="small mono">回收章节(payoff_ch)={String(x.planned_payoff_chapter_no || "-")}</div>
                     </div>
                   </div>
                 ))}
                 {overdue.map((x: any) => (
                   <div key={`over-${String(x.foreshadow_id)}`} className="node-item" style={{ cursor: "default", marginBottom: 6 }}>
                     <div style={{ width: "100%" }}>
-                      <div className="row"><strong>{String(x.title || "-")}</strong><span className="chip on">overdue</span></div>
-                      <div className="small mono">payoff_ch={String(x.planned_payoff_chapter_no || "-")}</div>
+                      <div className="row"><strong>{String(x.title || "-")}</strong><span className="chip on">已逾期(overdue)</span></div>
+                      <div className="small mono">回收章节(payoff_ch)={String(x.planned_payoff_chapter_no || "-")}</div>
                     </div>
                   </div>
                 ))}

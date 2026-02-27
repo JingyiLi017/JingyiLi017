@@ -258,55 +258,72 @@ async def run_commit_draft_job(session: AsyncSession, payload: dict, on_progress
     profile_version_used = int(profile_version_used_raw) if profile_version_used_raw is not None else None
     injected_bundle_id = str(payload.get("injected_bundle_id") or "").strip() or None
     injected_counts = payload.get("injected_counts") if isinstance(payload.get("injected_counts"), dict) else {}
+    skip_save_text_version = bool(payload.get("skip_save_text_version", False))
 
     await on_progress(8, "SAVE_TEXT_VERSION", "saving chapter text version")
     text_content = str(payload.get("text_content") or "").strip()
     text_ver_id = payload.get("text_ver_id")
-    if text_ver_id and not text_content:
+    existing_text_ver: dict[str, Any] | None = None
+    if text_ver_id:
         row_text = await session.execute(
-            text("SELECT content FROM chapter_text_version WHERE text_ver_id=:text_ver_id"),
+            text(
+                """
+                SELECT text_ver_id, outline_version, profile_id_used, profile_version_used, content
+                FROM chapter_text_version
+                WHERE text_ver_id=:text_ver_id
+                """
+            ),
             {"text_ver_id": str(text_ver_id)},
         )
-        r = row_text.mappings().first()
-        if not r:
+        existing_text_ver = row_text.mappings().first()
+        if not existing_text_ver:
             raise RuntimeError("TEXT_VER_NOT_FOUND")
-        text_content = str(r["content"] or "")
+        if not text_content:
+            text_content = str(existing_text_ver.get("content") or "")
     if not text_content:
         raise RuntimeError("TEXT_CONTENT_REQUIRED")
-
-    resolved_outline_version = int(payload.get("outline_version") or 1)
-    insert_text = await session.execute(
-        text(
-            """
-            INSERT INTO chapter_text_version(
-              chapter_id, outline_version, profile_id_used, profile_version_used, meta, source, content, note
-            )
-            VALUES (
-              :chapter_id, :outline_version, CAST(:profile_id_used AS uuid), :profile_version_used, CAST(:meta AS jsonb), 'draft', :content, :note
-            )
-            RETURNING text_ver_id, created_at, profile_id_used, profile_version_used
-            """
-        ),
-        {
-            "chapter_id": chapter_id,
-            "outline_version": resolved_outline_version,
-            "profile_id_used": profile_id_used,
-            "profile_version_used": profile_version_used,
-            "meta": json.dumps(
-                {
-                    "injected_bundle_id": injected_bundle_id,
-                    "injected_counts": injected_counts,
-                },
-                ensure_ascii=False,
+    if skip_save_text_version and existing_text_ver:
+        resolved_outline_version = int(payload.get("outline_version") or existing_text_ver.get("outline_version") or 1)
+        saved_text_ver_id = str(existing_text_ver.get("text_ver_id") or "")
+        if not profile_id_used and existing_text_ver.get("profile_id_used"):
+            profile_id_used = str(existing_text_ver.get("profile_id_used"))
+        if profile_version_used is None and existing_text_ver.get("profile_version_used") is not None:
+            profile_version_used = int(existing_text_ver.get("profile_version_used") or 1)
+        stage_result["SAVE_TEXT_VERSION"] = {"ok": True, "rows": 0, "reused": True, "text_ver_id": saved_text_ver_id}
+    else:
+        resolved_outline_version = int(payload.get("outline_version") or 1)
+        insert_text = await session.execute(
+            text(
+                """
+                INSERT INTO chapter_text_version(
+                  chapter_id, outline_version, profile_id_used, profile_version_used, meta, source, content, note
+                )
+                VALUES (
+                  :chapter_id, :outline_version, CAST(:profile_id_used AS uuid), :profile_version_used, CAST(:meta AS jsonb), 'draft', :content, :note
+                )
+                RETURNING text_ver_id, created_at, profile_id_used, profile_version_used
+                """
             ),
-            "content": text_content,
-            "note": f"commit_txn:{commit_txn_id}",
-        },
-    )
-    created_text = dict(insert_text.mappings().one())
-    saved_text_ver_id = str(created_text["text_ver_id"])
-    await session.commit()
-    stage_result["SAVE_TEXT_VERSION"] = {"ok": True, "rows": 1, "text_ver_id": saved_text_ver_id}
+            {
+                "chapter_id": chapter_id,
+                "outline_version": resolved_outline_version,
+                "profile_id_used": profile_id_used,
+                "profile_version_used": profile_version_used,
+                "meta": json.dumps(
+                    {
+                        "injected_bundle_id": injected_bundle_id,
+                        "injected_counts": injected_counts,
+                    },
+                    ensure_ascii=False,
+                ),
+                "content": text_content,
+                "note": f"commit_txn:{commit_txn_id}",
+            },
+        )
+        created_text = dict(insert_text.mappings().one())
+        saved_text_ver_id = str(created_text["text_ver_id"])
+        await session.commit()
+        stage_result["SAVE_TEXT_VERSION"] = {"ok": True, "rows": 1, "text_ver_id": saved_text_ver_id}
     await on_log("INFO", "SAVE_TEXT_VERSION", f"text_ver_id={saved_text_ver_id}")
 
     chunks = _split_text(text_content, chunk_size=2200, overlap=260)

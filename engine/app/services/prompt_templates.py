@@ -78,6 +78,7 @@ def build_plan_user_prompt(
     max_insert: int,
     max_change: int,
     max_patch: int,
+    reference_blocks: list[str] | None = None,
 ) -> str:
     required_schema = {
         "schema_name": "TENSION_CONTROL_PLAN",
@@ -99,6 +100,9 @@ def build_plan_user_prompt(
         },
         "warnings": [],
     }
+    refs = [str(x).strip() for x in (reference_blocks or []) if str(x).strip()]
+    refs_compact = [x[:1600] for x in refs[:8]]
+    refs_section = _dump(refs_compact) if refs_compact else "[]"
     return f"""Task: Generate a minimal patch plan to improve the chapter outline to match the targets.
 
 Inputs:
@@ -116,6 +120,9 @@ Actions override (MUST prioritize if present):
 
 Outline nodes in order:
 {_dump(outline_nodes)}
+
+Optional structure references (anti-copy mode, mechanics only):
+{refs_section}
 
 Mechanics you can use (choose only what is needed):
 - raise_stakes
@@ -137,6 +144,7 @@ Constraints:
 - max_total_patches = {max_patch}
 - Use at most 2 mechanics per chapter.
 - If actions_override is not empty, ensure those mechanics appear in selected_actions and patches unless impossible due to constraints.
+- References are for structure learning only: DO NOT copy wording, paragraphs, or original narrative order from references.
 - Do NOT fill in the node.summary content for inserted nodes; leave summary as "" and add them into fill_nodes for later filling.
 - Output JSON strictly following this required schema (same keys, same nesting):
 {_dump(required_schema)}

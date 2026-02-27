@@ -58,22 +58,22 @@ export function SettingsDiffPanel({
       <div className="h2">{title}</div>
       <div className="row" style={{ gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
         <div style={{ flex: 1, minWidth: 220 }}>
-          <div className="label">filter key</div>
+          <div className="label">过滤键</div>
           <input className="input" value={q} onChange={(e) => setQ(e.target.value)} />
         </div>
         <label className="row" style={{ gap: 8, alignItems: "center", marginBottom: 6 }}>
           <input type="checkbox" checked={onlyChanged} onChange={(e) => setOnlyChanged(e.target.checked)} />
-          <span className="small">only changes</span>
+          <span className="small">仅显示变更</span>
         </label>
       </div>
 
       <table className="table" style={{ width: "100%", marginTop: 10 }}>
         <thead>
           <tr>
-            <th>op</th>
-            <th>key</th>
-            <th>a</th>
-            <th>b</th>
+            <th>操作</th>
+            <th>键</th>
+            <th>旧值</th>
+            <th>新值</th>
             <th />
           </tr>
         </thead>
@@ -92,7 +92,7 @@ export function SettingsDiffPanel({
               <td className="mono">{short(r.b)}</td>
               <td style={{ textAlign: "right" }}>
                 {onOverrideBToScope && (r.op === "add" || r.op === "change") ? (
-                  <button onClick={() => onOverrideBToScope(r.key, r.b)}>Override(b)</button>
+                  <button onClick={() => onOverrideBToScope(r.key, r.b)}>覆盖（b）</button>
                 ) : null}
               </td>
             </tr>
@@ -100,7 +100,7 @@ export function SettingsDiffPanel({
           {rows.length === 0 ? (
             <tr>
               <td colSpan={5} className="small">
-                No changes.
+                暂无变更。
               </td>
             </tr>
           ) : null}
@@ -131,7 +131,7 @@ export function SettingsDiffPanel({
                 setMenu(null);
               }}
             >
-              Override at current scope
+              在当前范围覆盖
             </button>
           ) : null}
           <button
@@ -141,7 +141,7 @@ export function SettingsDiffPanel({
               setMenu(null);
             }}
           >
-            Copy key
+            复制键
           </button>
           <button
             style={{ width: "100%", textAlign: "left", marginTop: 4 }}
@@ -150,7 +150,7 @@ export function SettingsDiffPanel({
               setMenu(null);
             }}
           >
-            Copy value
+            复制值
           </button>
         </div>
       ) : null}

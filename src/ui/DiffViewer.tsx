@@ -22,7 +22,7 @@ export function DiffViewer({ before, after }: { before: string; after: string })
   return (
     <div className="job-grid">
       <div>
-        <div className="small" style={{ marginBottom: 6 }}>Before</div>
+        <div className="small" style={{ marginBottom: 6 }}>改写前</div>
         <div className="scroll" style={{ maxHeight: 320 }}>
           {rows.map((r, i) => (
             <div
@@ -30,13 +30,13 @@ export function DiffViewer({ before, after }: { before: string; after: string })
               className="issue-item"
               style={{ background: r.changed ? "rgba(245,158,11,.08)" : undefined }}
             >
-              <div style={{ whiteSpace: "pre-wrap" }}>{r.before || <span className="hint">(empty)</span>}</div>
+              <div style={{ whiteSpace: "pre-wrap" }}>{r.before || <span className="hint">(空)</span>}</div>
             </div>
           ))}
         </div>
       </div>
       <div>
-        <div className="small" style={{ marginBottom: 6 }}>After</div>
+        <div className="small" style={{ marginBottom: 6 }}>改写后</div>
         <div className="scroll" style={{ maxHeight: 320 }}>
           {rows.map((r, i) => (
             <div
@@ -44,7 +44,7 @@ export function DiffViewer({ before, after }: { before: string; after: string })
               className="issue-item"
               style={{ background: r.changed ? "rgba(34,197,94,.08)" : undefined }}
             >
-              <div style={{ whiteSpace: "pre-wrap" }}>{r.after || <span className="hint">(empty)</span>}</div>
+              <div style={{ whiteSpace: "pre-wrap" }}>{r.after || <span className="hint">(空)</span>}</div>
             </div>
           ))}
         </div>
@@ -52,4 +52,3 @@ export function DiffViewer({ before, after }: { before: string; after: string })
     </div>
   );
 }
-

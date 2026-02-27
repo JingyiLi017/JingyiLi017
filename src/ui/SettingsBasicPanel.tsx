@@ -57,6 +57,16 @@ export function SettingsBasicPanel({ settingsObj, onChange }: Props) {
   const tStakes = num(targets?.stakes ?? 0.72, 0.72);
   const tForeshadow = num(targets?.foreshadow ?? 0.65, 0.65);
   const tPayoff = num(targets?.payoff ?? 0.68, 0.68);
+  const evalLabels: Record<string, string> = {
+    hook: "钩子（hook）",
+    conflict: "冲突（conflict）",
+    pacing: "节奏（pacing）",
+    clarity: "清晰度（clarity）",
+    character: "人物（character）",
+    stakes: "风险（stakes）",
+    foreshadow: "伏笔（foreshadow）",
+    payoff: "回收（payoff）",
+  };
 
   function setTarget(k: string, v: number) {
     const out = { ...(typeof targets === "object" && targets ? targets : {}) };
@@ -74,6 +84,11 @@ export function SettingsBasicPanel({ settingsObj, onChange }: Props) {
   const apMaxNodes = num(getPath(settingsObj, "autopatch.max_nodes_touched", 5), 5);
   const apStrict = String(getPath(settingsObj, "autopatch.strictness", "mid"));
   const abPenalty = num(getPath(settingsObj, "ab.penalty", 0.8), 0.8);
+  const uiRetryMax = num(getPath(settingsObj, "ui.capability_chain.retry_max", 3), 3);
+  const uiRetryBaseMs = num(getPath(settingsObj, "ui.capability_chain.retry_base_ms", 600), 600);
+  const uiIngestConfirmKeyword = String(getPath(settingsObj, "ui.ingest_confirm.keyword", "导入")).trim() || "导入";
+  const uiDeleteMismatchBeep = !!getPath(settingsObj, "ui.delete_confirm.mismatch_beep", true);
+  const uiDeleteMismatchBeepLevel = String(getPath(settingsObj, "ui.delete_confirm.mismatch_beep_level", "soft"));
 
   const aiHooks = num(getPath(settingsObj, "assets.inject.hooks_n", 2), 2);
   const aiBeats = num(getPath(settingsObj, "assets.inject.beats_n", 2), 2);
@@ -90,14 +105,14 @@ export function SettingsBasicPanel({ settingsObj, onChange }: Props) {
   return (
     <div className="row" style={{ alignItems: "stretch", gap: 10, flexWrap: "wrap" }}>
       <div className="card" style={{ flex: "1 1 360px", minWidth: 320 }}>
-        <div className="h2">Draft</div>
+        <div className="h2">草稿</div>
         <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
           <div style={{ width: 160 }}>
-            <div className="label">default_words</div>
+            <div className="label">默认字数（default_words）</div>
             <input className="input" value={draftWords} onChange={(e) => onChange("draft.default_words", clamp(Number(e.target.value), 200, 20000))} />
           </div>
           <div style={{ width: 200 }}>
-            <div className="label">POV</div>
+            <div className="label">视角（POV）</div>
             <select className="input" value={draftPov} onChange={(e) => onChange("draft.pov", e.target.value)}>
               <option value="第一人称">第一人称</option>
               <option value="第三人称">第三人称</option>
@@ -105,42 +120,42 @@ export function SettingsBasicPanel({ settingsObj, onChange }: Props) {
             </select>
           </div>
         </div>
-        <div className="label" style={{ marginTop: 10 }}>tone</div>
+        <div className="label" style={{ marginTop: 10 }}>基调（tone）</div>
         <input className="input" value={draftTone} onChange={(e) => onChange("draft.tone", e.target.value)} />
       </div>
 
       <div className="card" style={{ flex: "1 1 360px", minWidth: 320 }}>
-        <div className="h2">SimGuard</div>
+        <div className="h2">相似度守卫（SimGuard）</div>
         <label className="row" style={{ gap: 8, alignItems: "center" }}>
           <input type="checkbox" checked={sgEnabled} onChange={(e) => onChange("simguard.enabled", e.target.checked)} />
-          <span className="small">enabled</span>
+          <span className="small">启用（enabled）</span>
         </label>
         <div className="row" style={{ gap: 10, flexWrap: "wrap", marginTop: 10 }}>
           <div style={{ width: 180 }}>
-            <div className="label">sim_threshold (0~1)</div>
+            <div className="label">相似阈值（sim_threshold，0~1）</div>
             <input className="input" value={sgThreshold} onChange={(e) => onChange("simguard.sim_threshold", clamp(Number(e.target.value), 0, 1))} />
           </div>
           <div style={{ width: 120 }}>
-            <div className="label">top_k</div>
+            <div className="label">TopK（top_k）</div>
             <input className="input" value={sgTopK} onChange={(e) => onChange("simguard.top_k", clamp(Number(e.target.value), 1, 20))} />
           </div>
         </div>
-        <div className="label" style={{ marginTop: 10 }}>scope_default</div>
+        <div className="label" style={{ marginTop: 10 }}>默认范围（scope_default）</div>
         <label className="row" style={{ gap: 8, alignItems: "center" }}>
           <input type="checkbox" checked={sgScopeSet.has("material_card")} onChange={(e) => toggleScope("material_card", e.target.checked)} />
-          <span className="small">material_card</span>
+          <span className="small">素材卡（material_card）</span>
         </label>
         <label className="row" style={{ gap: 8, alignItems: "center" }}>
           <input type="checkbox" checked={sgScopeSet.has("splitbook_chunk")} onChange={(e) => toggleScope("splitbook_chunk", e.target.checked)} />
-          <span className="small">splitbook_chunk</span>
+          <span className="small">拆书分片（splitbook_chunk）</span>
         </label>
       </div>
 
       <div className="card" style={{ flex: "2 1 740px", minWidth: 520 }}>
-        <div className="h2">Eval</div>
+        <div className="h2">评估（Eval）</div>
         <label className="row" style={{ gap: 8, alignItems: "center" }}>
           <input type="checkbox" checked={evEnabled} onChange={(e) => onChange("eval.enabled", e.target.checked)} />
-          <span className="small">enabled</span>
+          <span className="small">启用（enabled）</span>
         </label>
         <div className="row" style={{ gap: 10, flexWrap: "wrap", marginTop: 10 }}>
           {[
@@ -154,7 +169,7 @@ export function SettingsBasicPanel({ settingsObj, onChange }: Props) {
             ["payoff", tPayoff],
           ].map(([k, v]) => (
             <div key={String(k)} style={{ width: 150 }}>
-              <div className="label">{String(k)}</div>
+              <div className="label">{evalLabels[String(k)] || String(k)}</div>
               <input className="input" value={Number(v).toFixed(2)} onChange={(e) => setTarget(String(k), Number(e.target.value))} />
             </div>
           ))}
@@ -162,117 +177,175 @@ export function SettingsBasicPanel({ settingsObj, onChange }: Props) {
       </div>
 
       <div className="card" style={{ flex: "1 1 360px", minWidth: 320 }}>
-        <div className="h2">Humanize</div>
+        <div className="h2">去 AI 润色（Humanize）</div>
         <label className="row" style={{ gap: 8, alignItems: "center" }}>
           <input type="checkbox" checked={hEnabled} onChange={(e) => onChange("humanize.enabled", e.target.checked)} />
-          <span className="small">enabled (manual trigger)</span>
+          <span className="small">启用（手动触发）</span>
         </label>
         <div className="row" style={{ gap: 10, flexWrap: "wrap", marginTop: 10 }}>
           <div style={{ width: 180 }}>
-            <div className="label">level_default</div>
+            <div className="label">默认等级（level_default）</div>
             <select className="input" value={hLevel} onChange={(e) => onChange("humanize.level_default", e.target.value)}>
-              <option value="low">low</option>
-              <option value="mid">mid</option>
-              <option value="high">high</option>
+              <option value="low">低（low）</option>
+              <option value="mid">中（mid）</option>
+              <option value="high">高（high）</option>
             </select>
           </div>
         </div>
         <label className="row" style={{ gap: 8, alignItems: "center", marginTop: 10 }}>
           <input type="checkbox" checked={hRemoveCliches} onChange={(e) => onChange("humanize.remove_cliches", e.target.checked)} />
-          <span className="small">remove_cliches</span>
+          <span className="small">去套话（remove_cliches）</span>
         </label>
         <label className="row" style={{ gap: 8, alignItems: "center" }}>
           <input type="checkbox" checked={hReduceAi} onChange={(e) => onChange("humanize.reduce_ai_markers", e.target.checked)} />
-          <span className="small">reduce_ai_markers</span>
+          <span className="small">减少 AI 痕迹（reduce_ai_markers）</span>
         </label>
       </div>
 
       <div className="card" style={{ flex: "1 1 360px", minWidth: 320 }}>
-        <div className="h2">AutoPatch</div>
+        <div className="h2">自动补丁（AutoPatch）</div>
         <label className="row" style={{ gap: 8, alignItems: "center" }}>
           <input type="checkbox" checked={apEnabled} onChange={(e) => onChange("autopatch.enabled", e.target.checked)} />
-          <span className="small">enabled</span>
+          <span className="small">启用（enabled）</span>
         </label>
         <div className="row" style={{ gap: 10, flexWrap: "wrap", marginTop: 10 }}>
           <div style={{ width: 140 }}>
-            <div className="label">max_changes</div>
+            <div className="label">最大改动数（max_changes）</div>
             <input className="input" value={apMaxChanges} onChange={(e) => onChange("autopatch.max_changes", clamp(Number(e.target.value), 1, 50))} />
           </div>
           <div style={{ width: 170 }}>
-            <div className="label">max_nodes_touched</div>
+            <div className="label">最大节点数（max_nodes_touched）</div>
             <input className="input" value={apMaxNodes} onChange={(e) => onChange("autopatch.max_nodes_touched", clamp(Number(e.target.value), 1, 20))} />
           </div>
           <div style={{ width: 160 }}>
-            <div className="label">strictness</div>
+            <div className="label">严格度（strictness）</div>
             <select className="input" value={apStrict} onChange={(e) => onChange("autopatch.strictness", e.target.value)}>
-              <option value="low">low</option>
-              <option value="mid">mid</option>
-              <option value="high">high</option>
+              <option value="low">低（low）</option>
+              <option value="mid">中（mid）</option>
+              <option value="high">高（high）</option>
             </select>
           </div>
         </div>
       </div>
 
       <div className="card" style={{ flex: "1 1 360px", minWidth: 320 }}>
-        <div className="h2">A/B Score</div>
+        <div className="h2">A/B 评分</div>
         <div style={{ width: 160 }}>
-          <div className="label">penalty</div>
+          <div className="label">惩罚系数（penalty）</div>
           <input className="input" value={abPenalty} onChange={(e) => onChange("ab.penalty", clamp(Number(e.target.value), 0, 5))} />
         </div>
         <div className="small" style={{ marginTop: 8 }}>
-          score = eval_overall - penalty * simguard_max
+          评分 = eval_overall - penalty * simguard_max
+        </div>
+      </div>
+
+      <div className="card" style={{ flex: "1 1 360px", minWidth: 320 }}>
+        <div className="h2">能力观测自动重试</div>
+        <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
+          <div style={{ width: 180 }}>
+            <div className="label">最大重试次数（ui.capability_chain.retry_max）</div>
+            <input className="input" value={uiRetryMax} onChange={(e) => onChange("ui.capability_chain.retry_max", clamp(Number(e.target.value), 1, 8))} />
+          </div>
+          <div style={{ width: 220 }}>
+            <div className="label">基础退避毫秒（ui.capability_chain.retry_base_ms）</div>
+            <input className="input" value={uiRetryBaseMs} onChange={(e) => onChange("ui.capability_chain.retry_base_ms", clamp(Number(e.target.value), 200, 5000))} />
+          </div>
+        </div>
+        <div className="small" style={{ marginTop: 8 }}>
+          自动串联执行失败时，按指数退避重试：delay = base_ms * 2^(attempt-1)
+        </div>
+        <div className="hr" />
+        <div className="h2">导入确认提示</div>
+        <div style={{ width: 220 }}>
+          <div className="label">导入校验词（ui.ingest_confirm.keyword）</div>
+          <input
+            className="input"
+            value={uiIngestConfirmKeyword}
+            placeholder="导入"
+            maxLength={16}
+            onChange={(e) => {
+              const raw = String(e.target.value || "");
+              const normalized = raw.replace(/\s+/g, "").slice(0, 16);
+              onChange("ui.ingest_confirm.keyword", normalized || "导入");
+            }}
+          />
+        </div>
+        <div className="small" style={{ marginTop: 8 }}>
+          本地 TXT 导入前会要求输入该校验词，避免误触导入任务。
+        </div>
+        <div className="hr" />
+        <div className="h2">删除确认提示</div>
+        <label className="row" style={{ gap: 8, alignItems: "center" }}>
+          <input
+            type="checkbox"
+            checked={uiDeleteMismatchBeep}
+            onChange={(e) => onChange("ui.delete_confirm.mismatch_beep", e.target.checked)}
+          />
+          <span className="small">名称输入错误时播放提示音（ui.delete_confirm.mismatch_beep）</span>
+        </label>
+        <div style={{ width: 220, marginTop: 8 }}>
+          <div className="label">提示音强度（ui.delete_confirm.mismatch_beep_level）</div>
+          <select
+            className="input"
+            value={uiDeleteMismatchBeepLevel}
+            disabled={!uiDeleteMismatchBeep}
+            onChange={(e) => onChange("ui.delete_confirm.mismatch_beep_level", e.target.value)}
+          >
+            <option value="soft">轻提示（soft）</option>
+            <option value="strong">强提示（strong）</option>
+          </select>
         </div>
       </div>
 
       <div className="card" style={{ flex: "2 1 740px", minWidth: 520 }}>
-        <div className="h2">Assets Inject</div>
+        <div className="h2">素材注入</div>
         <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
           <div style={{ width: 120 }}>
-            <div className="label">hooks_n</div>
+            <div className="label">钩子数量（hooks_n）</div>
             <input className="input" value={aiHooks} onChange={(e) => onChange("assets.inject.hooks_n", clamp(Number(e.target.value), 0, 6))} />
           </div>
           <div style={{ width: 120 }}>
-            <div className="label">beats_n</div>
+            <div className="label">拍点数量（beats_n）</div>
             <input className="input" value={aiBeats} onChange={(e) => onChange("assets.inject.beats_n", clamp(Number(e.target.value), 0, 6))} />
           </div>
           <div style={{ width: 120 }}>
-            <div className="label">styles_n</div>
+            <div className="label">风格数量（styles_n）</div>
             <input className="input" value={aiStyles} onChange={(e) => onChange("assets.inject.styles_n", clamp(Number(e.target.value), 0, 3))} />
           </div>
           <div style={{ width: 140 }}>
-            <div className="label">templates_n</div>
+            <div className="label">模板数量（templates_n）</div>
             <input className="input" value={aiTemplates} onChange={(e) => onChange("assets.inject.templates_n", clamp(Number(e.target.value), 0, 3))} />
           </div>
           <div style={{ width: 150 }}>
-            <div className="label">max_chars</div>
+            <div className="label">最大字符（max_chars）</div>
             <input className="input" value={aiMaxChars} onChange={(e) => onChange("assets.inject.max_chars", clamp(Number(e.target.value), 200, 6000))} />
           </div>
           <div style={{ width: 180 }}>
-            <div className="label">risk.block_threshold</div>
+            <div className="label">风险阻断阈值（risk.block_threshold）</div>
             <input className="input" value={aiBlockThreshold} onChange={(e) => onChange("assets.risk.block_threshold", clamp(Number(e.target.value), 0, 1))} />
           </div>
         </div>
         <div className="hr" />
-        <div className="h2">Assets Cooldown</div>
+        <div className="h2">素材冷却</div>
         <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
           <div style={{ width: 150 }}>
-            <div className="label">window_uses</div>
+            <div className="label">窗口使用次数（window_uses）</div>
             <input className="input" value={cdWindowUses} onChange={(e) => onChange("assets.cooldown.window_uses", clamp(Number(e.target.value), 1, 200))} />
           </div>
           <div style={{ width: 170 }}>
-            <div className="label">time_window_days</div>
+            <div className="label">时间窗口天数（time_window_days）</div>
             <input className="input" value={cdDays} onChange={(e) => onChange("assets.cooldown.time_window_days", clamp(Number(e.target.value), 1, 90))} />
           </div>
           <div style={{ width: 120 }}>
-            <div className="label">hard_cap</div>
+            <div className="label">硬上限（hard_cap）</div>
             <input className="input" value={cdHardCap} onChange={(e) => onChange("assets.cooldown.hard_cap", clamp(Number(e.target.value), 1, 20))} />
           </div>
           <div style={{ width: 170 }}>
-            <div className="label">penalty_per_use</div>
+            <div className="label">单次惩罚（penalty_per_use）</div>
             <input className="input" value={cdPenaltyPerUse} onChange={(e) => onChange("assets.cooldown.penalty_per_use", clamp(Number(e.target.value), 0, 1))} />
           </div>
           <div style={{ width: 220 }}>
-            <div className="label">pinned_penalty_multiplier</div>
+            <div className="label">置顶惩罚倍率（pinned_penalty_multiplier）</div>
             <input className="input" value={cdPinnedMul} onChange={(e) => onChange("assets.cooldown.pinned_penalty_multiplier", clamp(Number(e.target.value), 0, 1))} />
           </div>
         </div>

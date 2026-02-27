@@ -37,31 +37,31 @@ export function CompareDrawer(props: CompareDrawerProps) {
       <aside className="compare-drawer" onClick={(e) => e.stopPropagation()}>
         <div className="compare-drawer-head">
           <div>
-            <strong>Compare</strong>
-            <div className="small">chapter: {props.chapterId || "-"}</div>
+            <strong>对比</strong>
+            <div className="small">章节：{props.chapterId || "-"}</div>
           </div>
           <div className="row">
-            <button onClick={() => void props.onLoadDiff()}>Load Diff</button>
-            <button onClick={() => void props.onLoadEvalCompare()}>Load Eval</button>
-            <button onClick={props.onClose}>Close</button>
+            <button onClick={() => void props.onLoadDiff()}>加载差异</button>
+            <button onClick={() => void props.onLoadEvalCompare()}>加载评估</button>
+            <button onClick={props.onClose}>关闭</button>
           </div>
         </div>
 
         <div className="compare-drawer-body">
-          <div className="small">version: v{props.compareFrom} → v{props.compareTo}</div>
-          <div className="small">eval: {props.evalBeforeRun || "-"} → {props.evalAfterRun || "-"}</div>
+          <div className="small">版本：v{props.compareFrom} → v{props.compareTo}</div>
+          <div className="small">评估：{props.evalBeforeRun || "-"} → {props.evalAfterRun || "-"}</div>
 
-          <h4>Eval Compare</h4>
+          <h4>评估对比</h4>
           {!props.evalCompare ? (
-            <div className="hint">No eval compare loaded</div>
+            <div className="hint">暂无评估对比。</div>
           ) : (
             <table className="compare-table">
               <thead>
                 <tr>
-                  <th>dim</th>
-                  <th>before</th>
-                  <th>after</th>
-                  <th>delta</th>
+                  <th>维度</th>
+                  <th>之前</th>
+                  <th>之后</th>
+                  <th>差值</th>
                 </tr>
               </thead>
               <tbody>
@@ -80,16 +80,16 @@ export function CompareDrawer(props: CompareDrawerProps) {
             </table>
           )}
 
-          <h4>Outline Diff</h4>
+          <h4>大纲差异</h4>
           {!props.compareDiff ? (
-            <div className="hint">No outline diff loaded</div>
+            <div className="hint">暂无大纲差异。</div>
           ) : (
             <>
               <div className="row">
-                <span className="tiny-chip">insert {stats.insert_count ?? 0}</span>
-                <span className="tiny-chip">change {stats.change_summary_count ?? 0}</span>
-                <span className="tiny-chip">remove {stats.remove_count ?? 0}</span>
-                <span className="tiny-chip">move {stats.move_count ?? 0}</span>
+                <span className="tiny-chip">新增 {stats.insert_count ?? 0}</span>
+                <span className="tiny-chip">变更 {stats.change_summary_count ?? 0}</span>
+                <span className="tiny-chip">删除 {stats.remove_count ?? 0}</span>
+                <span className="tiny-chip">移动 {stats.move_count ?? 0}</span>
               </div>
               <div className="row" style={{ marginTop: 6, flexWrap: "wrap" }}>
                 {Object.keys(mechanics).map((m) => (
@@ -99,47 +99,47 @@ export function CompareDrawer(props: CompareDrawerProps) {
                 ))}
               </div>
               <div style={{ marginTop: 8 }}>
-                <strong>Inserted</strong>
-                {inserted.length === 0 ? <div className="hint">None</div> : null}
+                <strong>新增节点</strong>
+                {inserted.length === 0 ? <div className="hint">无</div> : null}
                 {inserted.map((x: any) => (
                   <div key={x.node_id} className="issue-item">
                     <div className="small">
-                      <code>{x.node_id}</code> · {x.type} · {x.mechanic || "n/a"} · after <code>{x.after_node_id || "-"}</code>
+                      <code>{x.node_id}</code> · {x.type} · {x.mechanic || "无(n/a)"} · 位于 <code>{x.after_node_id || "-"}</code> 之后
                     </div>
                   </div>
                 ))}
               </div>
               <div style={{ marginTop: 8 }}>
-                <strong>Summary Changed</strong>
-                {changed.length === 0 ? <div className="hint">None</div> : null}
+                <strong>摘要变更</strong>
+                {changed.length === 0 ? <div className="hint">无</div> : null}
                 {changed.map((x: any) => (
                   <div key={x.node_id} className="issue-item">
-                    <div className="small"><code>{x.node_id}</code> · {x.mechanic || "n/a"}</div>
-                    <div className="small">before: {x.before}</div>
-                    <div className="small">after: {x.after}</div>
+                    <div className="small"><code>{x.node_id}</code> · {x.mechanic || "无(n/a)"}</div>
+                    <div className="small">之前：{x.before}</div>
+                    <div className="small">之后：{x.after}</div>
                   </div>
                 ))}
               </div>
             </>
           )}
 
-          <h4>Export</h4>
+          <h4>导出</h4>
           <div className="row">
-            <button onClick={() => void props.onExportHtml()}>Export HTML</button>
-            <button onClick={() => void props.onExportPdf()}>Export PDF</button>
-            {props.reportPdfPath ? <button onClick={() => void props.onOpenFolder()}>Open Folder</button> : null}
+            <button onClick={() => void props.onExportHtml()}>导出 HTML</button>
+            <button onClick={() => void props.onExportPdf()}>导出 PDF</button>
+            {props.reportPdfPath ? <button onClick={() => void props.onOpenFolder()}>打开目录</button> : null}
           </div>
           {props.reportPdfPath ? <div className="small"><code>{props.reportPdfPath}</code></div> : null}
 
-          <h4>Latest Commit Profile</h4>
+          <h4>最新提交画像</h4>
           {!props.latestChapterReport ? (
-            <div className="hint">No chapter report loaded</div>
+            <div className="hint">暂无章节报告。</div>
           ) : (
             <>
-              <div className="small"><code>report_id</code>: {props.latestChapterReport.report_id || "-"}</div>
-              <div className="small"><code>text_ver_id</code>: {props.latestChapterReport.text_ver_id || "-"}</div>
-              <div className="small"><code>profile_id_used</code>: {props.latestChapterReport.profile_id_used || "-"}</div>
-              <div className="small"><code>profile_version_used</code>: {props.latestChapterReport.profile_version_used ?? "-"}</div>
+              <div className="small">报告ID（report_id）：<code>{props.latestChapterReport.report_id || "-"}</code></div>
+              <div className="small">文本版本ID（text_ver_id）：<code>{props.latestChapterReport.text_ver_id || "-"}</code></div>
+              <div className="small">画像ID（profile_id_used）：<code>{props.latestChapterReport.profile_id_used || "-"}</code></div>
+              <div className="small">画像版本（profile_version_used）：<code>{props.latestChapterReport.profile_version_used ?? "-"}</code></div>
               {props.onOpenProfileVersion &&
               props.latestChapterReport.profile_id_used &&
               Number(props.latestChapterReport.profile_version_used || 0) > 0 ? (
@@ -152,7 +152,7 @@ export function CompareDrawer(props: CompareDrawerProps) {
                       )
                     }
                   >
-                    Open Profile Version
+                    打开画像版本
                   </button>
                 </div>
               ) : null}

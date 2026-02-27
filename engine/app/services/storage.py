@@ -1009,6 +1009,33 @@ CREATE TABLE IF NOT EXISTS asset_policy_audit_log (
 CREATE INDEX IF NOT EXISTS idx_asset_policy_audit_book_time
 ON asset_policy_audit_log(book_id, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS asset_snapshot (
+  snapshot_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  book_id UUID NOT NULL REFERENCES book(book_id) ON DELETE CASCADE,
+  snapshot_name TEXT NOT NULL DEFAULT '',
+  reason TEXT NOT NULL DEFAULT '',
+  tag TEXT NOT NULL DEFAULT '',
+  summary JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_by TEXT NOT NULL DEFAULT 'desktop_user',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_asset_snapshot_book_time
+ON asset_snapshot(book_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS asset_snapshot_item (
+  item_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  snapshot_id UUID NOT NULL REFERENCES asset_snapshot(snapshot_id) ON DELETE CASCADE,
+  asset_type TEXT NOT NULL,
+  asset_key TEXT NOT NULL DEFAULT '',
+  ref_id UUID NULL,
+  version INTEGER NULL,
+  payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE(snapshot_id, asset_type, asset_key)
+);
+CREATE INDEX IF NOT EXISTS idx_asset_snapshot_item_snapshot
+ON asset_snapshot_item(snapshot_id, asset_type, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS foreshadow (
   foreshadow_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   book_id UUID NOT NULL REFERENCES book(book_id) ON DELETE CASCADE,
@@ -1411,6 +1438,114 @@ async def list_books(session: AsyncSession, query: str = "", limit: int = 50) ->
     return [dict(r) for r in result.mappings().all()]
 
 
+async def delete_book(session: AsyncSession, book_id: str) -> dict | None:
+    exists_row = (
+        await session.execute(
+            text(
+                """
+                SELECT book_id, profile_id, title, author, language, notes, created_at
+                FROM book
+                WHERE book_id::text = :book_id
+                """
+            ),
+            {"book_id": book_id},
+        )
+    ).mappings().first()
+    if not exists_row:
+        return None
+
+    stats_row = (
+        await session.execute(
+            text(
+                """
+                SELECT
+                  (SELECT COUNT(*) FROM chapter WHERE book_id::text=:book_id) AS chapters,
+                  (SELECT COUNT(*) FROM volume WHERE book_id::text=:book_id) AS volumes,
+                  (SELECT COUNT(*) FROM outline WHERE book_id::text=:book_id) AS outlines,
+                  (SELECT COUNT(*) FROM chunk WHERE book_id::text=:book_id) AS chunks,
+                  (
+                    SELECT COUNT(*)
+                    FROM chapter_text_version tv
+                    JOIN chapter c ON c.chapter_id=tv.chapter_id
+                    WHERE c.book_id::text=:book_id
+                  ) AS text_versions,
+                  (SELECT COUNT(*) FROM chapter_fact WHERE book_id::text=:book_id) AS fact_rows,
+                  (SELECT COUNT(*) FROM chapter_timeline_event WHERE book_id::text=:book_id) AS timeline_rows
+                """
+            ),
+            {"book_id": book_id},
+        )
+    ).mappings().first()
+
+    deleted_jobs = 0
+    try:
+        cleanup_result = await session.execute(
+            text(
+                """
+                DELETE FROM jobs j
+                WHERE
+                  j.book_id::text = :book_id
+                  OR COALESCE(j.payload->>'book_id', '') = :book_id
+                  OR EXISTS (
+                    SELECT 1
+                    FROM chapter c
+                    WHERE c.book_id::text = :book_id
+                      AND (
+                        c.chapter_id = j.chapter_id
+                        OR COALESCE(j.payload->>'chapter_id', '') = c.chapter_id::text
+                      )
+                  )
+                """
+            ),
+            {"book_id": book_id},
+        )
+        deleted_jobs = int(cleanup_result.rowcount or 0)
+    except Exception:
+        cleanup_result = await session.execute(
+            text(
+                """
+                DELETE FROM jobs j
+                WHERE j.book_id::text = :book_id
+                   OR EXISTS (
+                        SELECT 1
+                        FROM chapter c
+                        WHERE c.book_id::text = :book_id
+                          AND c.chapter_id = j.chapter_id
+                    )
+                """
+            ),
+            {"book_id": book_id},
+        )
+        deleted_jobs = int(cleanup_result.rowcount or 0)
+
+    result = await session.execute(
+        text(
+            """
+            DELETE FROM book
+            WHERE book_id::text=:book_id
+            RETURNING book_id, profile_id, title, author, language, notes, created_at
+            """
+        ),
+        {"book_id": book_id},
+    )
+    row = result.mappings().first()
+    await session.commit()
+    if not row:
+        return None
+    out = dict(row)
+    out["deleted_jobs"] = deleted_jobs
+    out["deleted_stats"] = {k: int((stats_row or {}).get(k) or 0) for k in (
+        "chapters",
+        "volumes",
+        "outlines",
+        "chunks",
+        "text_versions",
+        "fact_rows",
+        "timeline_rows",
+    )}
+    return out
+
+
 async def create_chapter(
     session: AsyncSession,
     book_id: str,
@@ -1454,6 +1589,22 @@ async def list_chapters(session: AsyncSession, book_id: str, query: str = "", li
         {"book_id": book_id, "query": (query or "").strip(), "limit": int(limit)},
     )
     return [dict(r) for r in result.mappings().all()]
+
+
+async def delete_chapter(session: AsyncSession, chapter_id: str) -> dict | None:
+    result = await session.execute(
+        text(
+            """
+            DELETE FROM chapter
+            WHERE chapter_id=:chapter_id
+            RETURNING chapter_id, book_id, "order" AS chapter_no, title, arc_id, arc_index, created_at
+            """
+        ),
+        {"chapter_id": chapter_id},
+    )
+    row = result.mappings().first()
+    await session.commit()
+    return dict(row) if row else None
 
 
 async def _table_exists(session: AsyncSession, table_name: str) -> bool:
@@ -1664,9 +1815,48 @@ async def get_job(session: AsyncSession, job_id: UUID) -> dict | None:
     result = await session.execute(
         text(
             """
-            SELECT job_id, book_id, chapter_id, job_type, capability_id, status, stage, progress_value, progress, run_id, payload, result, logs, error, created_at, updated_at
-            FROM jobs
-            WHERE job_id=:job_id
+            SELECT
+              j.job_id, j.book_id, j.chapter_id, j.job_type, j.capability_id, j.status, j.stage,
+              j.progress_value, j.progress, j.run_id, j.payload, j.result, j.logs, j.error, j.created_at, j.updated_at,
+              b.title AS book_title,
+              c.title AS chapter_title,
+              sb.name AS splitbook_name,
+              sb.author AS splitbook_author,
+              NULLIF(j.payload->>'splitbook_id', '') AS splitbook_id,
+              COALESCE(
+                NULLIF(b.title, ''),
+                NULLIF(sb.name, ''),
+                NULLIF(j.payload->>'book_title', ''),
+                NULLIF(j.payload->>'book_name', ''),
+                NULLIF(j.payload->>'name', ''),
+                ''
+              ) AS job_book_label
+            FROM jobs j
+            LEFT JOIN book b
+              ON b.book_id = COALESCE(
+                j.book_id,
+                CASE
+                  WHEN COALESCE(j.payload->>'book_id', '') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+                  THEN CAST(j.payload->>'book_id' AS uuid)
+                  ELSE NULL
+                END
+              )
+            LEFT JOIN chapter c
+              ON c.chapter_id = COALESCE(
+                j.chapter_id,
+                CASE
+                  WHEN COALESCE(j.payload->>'chapter_id', '') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+                  THEN CAST(j.payload->>'chapter_id' AS uuid)
+                  ELSE NULL
+                END
+              )
+            LEFT JOIN splitbook sb
+              ON sb.splitbook_id = CASE
+                WHEN COALESCE(j.payload->>'splitbook_id', '') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+                THEN CAST(j.payload->>'splitbook_id' AS uuid)
+                ELSE NULL
+              END
+            WHERE j.job_id=:job_id
             """
         ),
         {"job_id": str(job_id)},
@@ -1681,16 +1871,193 @@ async def list_jobs(
     limit: int = 30,
 ) -> list[dict]:
     sql = """
-      SELECT job_id, book_id, chapter_id, job_type, capability_id, status, stage, progress_value, progress, run_id, payload, result, logs, error, created_at, updated_at
-      FROM jobs
+      SELECT
+        j.job_id, j.book_id, j.chapter_id, j.job_type, j.capability_id, j.status, j.stage,
+        j.progress_value, j.progress, j.run_id, j.payload, j.result, j.logs, j.error, j.created_at, j.updated_at,
+        b.title AS book_title,
+        c.title AS chapter_title,
+        sb.name AS splitbook_name,
+        sb.author AS splitbook_author,
+        NULLIF(j.payload->>'splitbook_id', '') AS splitbook_id,
+        COALESCE(
+          NULLIF(b.title, ''),
+          NULLIF(sb.name, ''),
+          NULLIF(j.payload->>'book_title', ''),
+          NULLIF(j.payload->>'book_name', ''),
+          NULLIF(j.payload->>'name', ''),
+          ''
+        ) AS job_book_label
+      FROM jobs j
+      LEFT JOIN book b
+        ON b.book_id = COALESCE(
+          j.book_id,
+          CASE
+            WHEN COALESCE(j.payload->>'book_id', '') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+            THEN CAST(j.payload->>'book_id' AS uuid)
+            ELSE NULL
+          END
+        )
+      LEFT JOIN chapter c
+        ON c.chapter_id = COALESCE(
+          j.chapter_id,
+          CASE
+            WHEN COALESCE(j.payload->>'chapter_id', '') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+            THEN CAST(j.payload->>'chapter_id' AS uuid)
+            ELSE NULL
+          END
+        )
+      LEFT JOIN splitbook sb
+        ON sb.splitbook_id = CASE
+          WHEN COALESCE(j.payload->>'splitbook_id', '') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+          THEN CAST(j.payload->>'splitbook_id' AS uuid)
+          ELSE NULL
+        END
     """
     params: dict[str, object] = {"limit": limit}
     if status:
-        sql += " WHERE status = :status"
-        params["status"] = status
-    sql += " ORDER BY created_at DESC LIMIT :limit"
+        normalized = str(status).strip().lower()
+        if normalized in {"canceled", "cancelled"}:
+            sql += " WHERE status = ANY(CAST(:statuses AS text[]))"
+            params["statuses"] = ["canceled", "cancelled"]
+        else:
+            sql += " WHERE status = :status"
+            params["status"] = normalized
+    sql += " ORDER BY updated_at DESC, created_at DESC LIMIT :limit"
     result = await session.execute(text(sql), params)
     return [dict(r) for r in result.mappings().all()]
+
+
+async def delete_jobs(
+    session: AsyncSession,
+    *,
+    status: str | None = None,
+    statuses: list[str] | None = None,
+    limit: int = 5000,
+    exclude_running: bool = True,
+) -> int:
+    lim = max(1, min(int(limit), 50000))
+    clauses: list[str] = []
+    params: dict[str, object] = {"limit": lim}
+    if status:
+        normalized_status = str(status).strip().lower()
+        if normalized_status in {"canceled", "cancelled"}:
+            clauses.append("status = ANY(CAST(:status_aliases AS text[]))")
+            params["status_aliases"] = ["canceled", "cancelled"]
+        else:
+            clauses.append("status = :status")
+            params["status"] = normalized_status
+    if statuses:
+        normalized = [str(s).strip().lower() for s in statuses if str(s).strip()]
+        expanded: list[str] = []
+        for st in normalized:
+            if st in {"canceled", "cancelled"}:
+                expanded.extend(["canceled", "cancelled"])
+            else:
+                expanded.append(st)
+        normalized = sorted(set(expanded))
+        if normalized:
+            clauses.append("status = ANY(CAST(:statuses AS text[]))")
+            params["statuses"] = normalized
+    if exclude_running:
+        clauses.append("status <> 'running'")
+    where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    res = await session.execute(
+        text(
+            f"""
+            WITH to_del AS (
+              SELECT job_id
+              FROM jobs
+              {where_sql}
+              ORDER BY created_at ASC
+              LIMIT :limit
+            )
+            DELETE FROM jobs j
+            USING to_del d
+            WHERE j.job_id = d.job_id
+            RETURNING j.job_id
+            """
+        ),
+        params,
+    )
+    await session.commit()
+    return len(res.fetchall())
+
+
+async def delete_job_by_id(session: AsyncSession, job_id: str, *, allow_active: bool = False) -> dict | None:
+    row = await get_job(session, job_id)
+    if not row:
+        return None
+    status = str(row.get("status") or "").strip().lower()
+    if not allow_active and status in {"queued", "running"}:
+        raise RuntimeError("JOB_DELETE_RUNNING_FORBIDDEN")
+    await session.execute(text("DELETE FROM jobs WHERE job_id=:job_id"), {"job_id": str(job_id)})
+    await session.commit()
+    return row
+
+
+async def delete_jobs_by_splitbook(
+    session: AsyncSession,
+    splitbook_id: str,
+    *,
+    include_active: bool = False,
+) -> int:
+    sid = str(splitbook_id or "").strip()
+    if not sid:
+        return 0
+    res = await session.execute(
+        text(
+            """
+            DELETE FROM jobs
+            WHERE payload->>'splitbook_id' = :sid
+              AND (:include_active = true OR status NOT IN ('queued', 'running'))
+            RETURNING job_id
+            """
+        ),
+        {"sid": sid, "include_active": bool(include_active)},
+    )
+    await session.commit()
+    return len(res.fetchall())
+
+
+async def delete_dangling_splitbook_jobs(
+    session: AsyncSession,
+    *,
+    limit: int = 20000,
+    include_active: bool = False,
+) -> int:
+    lim = max(1, min(int(limit), 50000))
+    res = await session.execute(
+        text(
+            """
+            WITH to_del AS (
+              SELECT j.job_id
+              FROM jobs j
+              WHERE COALESCE(j.payload->>'splitbook_id', '') <> ''
+                AND (
+                  CASE
+                    WHEN COALESCE(j.payload->>'splitbook_id', '') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+                      THEN NOT EXISTS (
+                        SELECT 1
+                        FROM splitbook s
+                        WHERE s.splitbook_id = CAST(j.payload->>'splitbook_id' AS uuid)
+                      )
+                    ELSE true
+                  END
+                )
+                AND (:include_active = true OR j.status NOT IN ('queued', 'running'))
+              ORDER BY j.updated_at DESC, j.created_at DESC
+              LIMIT :limit
+            )
+            DELETE FROM jobs j
+            USING to_del d
+            WHERE j.job_id = d.job_id
+            RETURNING j.job_id
+            """
+        ),
+        {"limit": lim, "include_active": bool(include_active)},
+    )
+    await session.commit()
+    return len(res.fetchall())
 
 
 async def append_job_log(session: AsyncSession, job_id: str, level: str, phase: str, message: str) -> None:
@@ -2614,6 +2981,22 @@ async def list_profiles(session: AsyncSession) -> list[dict]:
     return [dict(r) for r in result.mappings().all()]
 
 
+async def delete_profile(session: AsyncSession, profile_id: str) -> dict | None:
+    result = await session.execute(
+        text(
+            """
+            DELETE FROM profile
+            WHERE profile_id=:profile_id
+            RETURNING profile_id, name, note, active_version, features, dos, donts, created_at, updated_at
+            """
+        ),
+        {"profile_id": profile_id},
+    )
+    row = result.mappings().first()
+    await session.commit()
+    return dict(row) if row else None
+
+
 async def get_profile(session: AsyncSession, profile_id: str) -> dict | None:
     result = await session.execute(
         text(
@@ -3082,6 +3465,28 @@ async def update_splitbook_status(
     return dict(row) if row else None
 
 
+async def delete_splitbook(session: AsyncSession, splitbook_id: str, *, purge_assets: bool = False) -> dict | None:
+    current = await get_splitbook(session, splitbook_id)
+    if not current:
+        return None
+    if purge_assets:
+        await session.execute(
+            text("DELETE FROM template_asset WHERE source_splitbook_id=CAST(:splitbook_id AS uuid)"),
+            {"splitbook_id": splitbook_id},
+        )
+    else:
+        await session.execute(
+            text("UPDATE template_asset SET source_splitbook_id=NULL WHERE source_splitbook_id=CAST(:splitbook_id AS uuid)"),
+            {"splitbook_id": splitbook_id},
+        )
+    await session.execute(
+        text("DELETE FROM splitbook WHERE splitbook_id=CAST(:splitbook_id AS uuid)"),
+        {"splitbook_id": splitbook_id},
+    )
+    await session.commit()
+    return current
+
+
 async def create_template(
     session: AsyncSession,
     profile_id: str,
@@ -3173,6 +3578,38 @@ async def get_template_asset(session: AsyncSession, asset_id: str) -> dict | Non
         {"asset_id": asset_id},
     )
     row = res.mappings().first()
+    return dict(row) if row else None
+
+
+async def delete_template_asset(session: AsyncSession, asset_id: str) -> dict | None:
+    res = await session.execute(
+        text(
+            """
+            DELETE FROM template_asset
+            WHERE asset_id=:asset_id
+            RETURNING asset_id, asset_type, name, description, tags, source_splitbook_id, source_span, created_at
+            """
+        ),
+        {"asset_id": asset_id},
+    )
+    row = res.mappings().first()
+    await session.commit()
+    return dict(row) if row else None
+
+
+async def delete_structure_template(session: AsyncSession, template_id: str) -> dict | None:
+    res = await session.execute(
+        text(
+            """
+            DELETE FROM structure_template
+            WHERE template_id=:template_id
+            RETURNING template_id, profile_id, name, level, tags, schema_ver, graph, meta, created_at
+            """
+        ),
+        {"template_id": template_id},
+    )
+    row = res.mappings().first()
+    await session.commit()
     return dict(row) if row else None
 
 

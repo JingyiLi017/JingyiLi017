@@ -731,6 +731,7 @@ async def _try_llm_plan(
     actions_override: list[str],
     outline_nodes: list[dict[str, Any]],
     limits: dict[str, int],
+    reference_blocks: list[str] | None,
     on_log,
 ) -> dict[str, Any] | None:
     prompt = build_plan_user_prompt(
@@ -742,6 +743,7 @@ async def _try_llm_plan(
         max_insert=int(limits.get("max_insert_nodes", 4)),
         max_change=int(limits.get("max_change_summary", 2)),
         max_patch=int(limits.get("max_total_patches", 8)),
+        reference_blocks=reference_blocks,
     )
     schema_hint = (
         '{"schema_name":"TENSION_CONTROL_PLAN","schema_ver":1,'
@@ -809,13 +811,7 @@ async def run_eval_tension_job(session: AsyncSession, payload: dict[str, Any], o
         on_log=on_log,
     )
     if score_data is None:
-        score_data = evaluate_tension_score_v1(source_text, nodes)
-        try:
-            score_data, eval_warnings = validate_eval_output(score_data)
-            if eval_warnings:
-                await on_log("WARN", "LLM_SCORE", f"rule eval soft-fix: {', '.join(eval_warnings[:4])}")
-        except Exception as exc:
-            raise RuntimeError(f"EVAL_SCHEMA_INVALID stage=LLM_SCORE err={short_err(exc)}") from exc
+        raise RuntimeError("EVAL_AI_REQUIRED:LLM_SCORE_UNAVAILABLE")
 
     await on_progress(100, "DONE", "完成")
     saved = await session.execute(
@@ -868,6 +864,7 @@ async def run_tension_control_plan_job(session: AsyncSession, payload: dict[str,
     targets = merge_defaults(DEFAULT_TENSION_TARGETS, payload.get("targets", {}) or {})
     style = merge_defaults(DEFAULT_TENSION_STYLE, payload.get("style", {}) or {})
     actions_override = payload.get("actions_override") or []
+    material_refs = [str(x).strip() for x in (payload.get("material_refs") or []) if str(x).strip()][:20]
     llm_model = str(payload.get("llm_model") or DEFAULT_LLM_MODEL)
 
     await on_progress(8, "GATHER_CONTEXT", "加载细纲与当前分数")
@@ -883,13 +880,7 @@ async def run_tension_control_plan_job(session: AsyncSession, payload: dict[str,
         on_log=on_log,
     )
     if score_data is None:
-        score_data = evaluate_tension_score_v1(text_for_eval, nodes)
-        try:
-            score_data, eval_warnings = validate_eval_output(score_data)
-            if eval_warnings:
-                await on_log("WARN", "LLM_SCORE", f"rule eval soft-fix: {', '.join(eval_warnings[:4])}")
-        except Exception as exc:
-            raise RuntimeError(f"EVAL_SCHEMA_INVALID stage=LLM_SCORE err={short_err(exc)}") from exc
+        raise RuntimeError("CONTROL_PLAN_AI_REQUIRED:LLM_SCORE_UNAVAILABLE")
     scores = (score_data.get("result") or {}).get("scores", {})
 
     await on_progress(40, "PLAN_RECIPE", "生成机制配方")
@@ -919,71 +910,24 @@ async def run_tension_control_plan_job(session: AsyncSession, payload: dict[str,
             "max_change_summary": int(plan["limits"].get("max_change_summary", 2)),
             "max_total_patches": int(plan["limits"].get("max_total_patches", 8)),
         },
+        reference_blocks=material_refs,
         on_log=on_log,
     )
+    if llm_result is None:
+        raise RuntimeError("CONTROL_PLAN_AI_REQUIRED:LLM_PLAN_UNAVAILABLE")
 
     await on_progress(58, "FILL_SUMMARIES", "批量填充补丁摘要")
-    validated_result: dict[str, Any]
-    if llm_result is not None:
-        llm_patches = (((llm_result.get("result") or {}).get("patches")) or [])
-        if not llm_patches:
-            await on_log("WARN", "FILL_SUMMARIES", "llm plan returned zero patches, fallback to rule planner")
-            llm_result = None
-        else:
-            fill_nodes = (((llm_result.get("result") or {}).get("fill_nodes")) or [])
-            fill_req = await _build_fill_request(outline_detail, fill_nodes)
-            llm_fills = await _try_llm_fill(llm_model=llm_model, fill_request=fill_req, batch_size=4, on_log=on_log)
-            if llm_fills is None:
-                llm_fills = fill_in_batches(fill_req, batch_size=8)
-            final_patches = apply_filled_summaries_to_patches(llm_patches, llm_fills)
-            llm_result["result"]["patches"] = final_patches[:12]
-            validated_result = llm_result
-    if llm_result is None:
-        fill_req = await _build_fill_request(outline_detail, plan["fill_nodes"])
-        summaries = fill_in_batches(fill_req, batch_size=8)
-        final_patches = apply_filled_summaries_to_patches(plan["patches"], summaries)[:12]
-        result = {
-            "schema_name": "TENSION_CONTROL_PLAN",
-            "schema_ver": 1,
-            "generated_at": datetime.now(timezone.utc).isoformat(),
-            "result": {
-                "gap": plan["gap"],
-                "scores": scores,
-                "selected_actions": plan["selected_actions"],
-                "actions": plan["selected_actions"],
-                "patches": final_patches,
-                "fill_nodes": plan["fill_nodes"],
-                "limits": plan["limits"],
-            },
-            "warnings": [],
-        }
-        try:
-            validated_result, plan_warnings = validate_plan_output(
-                result,
-                max_insert=int(plan["limits"].get("max_insert_nodes", 4)),
-                max_change=int(plan["limits"].get("max_change_summary", 2)),
-                max_patches=int(plan["limits"].get("max_total_patches", 8)),
-                actions_override=[str(x) for x in actions_override],
-            )
-            if plan_warnings:
-                await on_log("WARN", "VALIDATE_PATCH", f"plan schema soft-fix: {', '.join(plan_warnings[:4])}")
-        except Exception as exc:
-            await on_log("WARN", "VALIDATE_PATCH", f"plan schema invalid, fallback enabled: {short_err(exc)}")
-            validated_result = {
-                "schema_name": "TENSION_CONTROL_PLAN_FALLBACK",
-                "schema_ver": 1,
-                "generated_at": datetime.now(timezone.utc).isoformat(),
-                "result": {
-                    "gap": plan["gap"],
-                    "scores": scores,
-                    "selected_actions": plan["selected_actions"],
-                    "suggested_actions": [x.get("mechanic") for x in plan["selected_actions"]],
-                    "patches": [],
-                    "fill_nodes": [],
-                    "limits": plan["limits"],
-                },
-                "warnings": [f"fallback_reason: {short_err(exc)}"],
-            }
+    llm_patches = (((llm_result.get("result") or {}).get("patches")) or [])
+    if not llm_patches:
+        raise RuntimeError("CONTROL_PLAN_AI_REQUIRED:LLM_PLAN_EMPTY_PATCHES")
+    fill_nodes = (((llm_result.get("result") or {}).get("fill_nodes")) or [])
+    fill_req = await _build_fill_request(outline_detail, fill_nodes)
+    llm_fills = await _try_llm_fill(llm_model=llm_model, fill_request=fill_req, batch_size=4, on_log=on_log)
+    if llm_fills is None:
+        raise RuntimeError("CONTROL_PLAN_AI_REQUIRED:LLM_FILL_UNAVAILABLE")
+    final_patches = apply_filled_summaries_to_patches(llm_patches, llm_fills)
+    llm_result["result"]["patches"] = final_patches[:12]
+    validated_result: dict[str, Any] = llm_result
 
     await on_progress(92, "SAVE_SKILL_RUN", "写入控制计划")
     saved = await session.execute(
@@ -1000,7 +944,7 @@ async def run_tension_control_plan_job(session: AsyncSession, payload: dict[str,
     await session.commit()
 
     actual_patches = (((validated_result.get("result") or {}).get("patches")) or [])
-    await on_log("INFO", "DONE", f"tension control plan 完成 patches={len(actual_patches)}")
+    await on_log("INFO", "DONE", f"tension control plan 完成 patches={len(actual_patches)} refs={len(material_refs)}")
     await on_progress(100, "DONE", "完成")
     return {"skill_run_id": skill_run_id, "gap": plan["gap"], "actions": len(plan["selected_actions"]), "patches": len(actual_patches)}
 
@@ -1241,6 +1185,68 @@ async def list_outline_versions(session: AsyncSession, chapter_id: str) -> list[
         {"chapter_id": chapter_id},
     )
     return [dict(r) for r in result.mappings().all()]
+
+
+async def delete_outline_detail(session: AsyncSession, chapter_id: str, version: int | None) -> dict[str, Any]:
+    chapter_row = await session.execute(
+        text("SELECT chapter_id::text AS chapter_id FROM chapter WHERE chapter_id=CAST(:chapter_id AS uuid) LIMIT 1"),
+        {"chapter_id": chapter_id},
+    )
+    if not chapter_row.mappings().first():
+        raise RuntimeError("CHAPTER_NOT_FOUND")
+
+    if version is None:
+        target = await session.execute(
+            text(
+                """
+                SELECT outline_id::text AS outline_id, version
+                FROM outline
+                WHERE chapter_id=CAST(:chapter_id AS uuid) AND scope='chapter'
+                ORDER BY version DESC
+                LIMIT 1
+                """
+            ),
+            {"chapter_id": chapter_id},
+        )
+    else:
+        target = await session.execute(
+            text(
+                """
+                SELECT outline_id::text AS outline_id, version
+                FROM outline
+                WHERE chapter_id=CAST(:chapter_id AS uuid) AND scope='chapter' AND version=:version
+                LIMIT 1
+                """
+            ),
+            {"chapter_id": chapter_id, "version": int(version)},
+        )
+    target_row = target.mappings().first()
+    if not target_row:
+        raise RuntimeError("OUTLINE_NOT_FOUND")
+
+    await session.execute(
+        text("DELETE FROM outline WHERE outline_id=CAST(:outline_id AS uuid)"),
+        {"outline_id": str(target_row["outline_id"])},
+    )
+
+    remain = await session.execute(
+        text(
+            """
+            SELECT COUNT(*)::int AS total, COALESCE(MAX(version), 0)::int AS latest_version
+            FROM outline
+            WHERE chapter_id=CAST(:chapter_id AS uuid) AND scope='chapter'
+            """
+        ),
+        {"chapter_id": chapter_id},
+    )
+    remain_row = remain.mappings().first() or {}
+    await session.commit()
+    return {
+        "chapter_id": chapter_id,
+        "deleted_version": int(target_row["version"]),
+        "remaining_total": int(remain_row.get("total") or 0),
+        "remaining_latest_version": int(remain_row.get("latest_version") or 0),
+    }
 
 
 async def save_outline_detail(session: AsyncSession, chapter_id: str, outline: dict[str, Any], note: str | None = None) -> dict[str, Any]:

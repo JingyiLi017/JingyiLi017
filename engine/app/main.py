@@ -10,12 +10,14 @@ import csv
 import os
 from pathlib import Path
 from datetime import datetime, timezone
+from typing import Any
 from uuid import UUID
 from uuid import uuid4
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
-from fastapi.responses import StreamingResponse
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy import text
 from starlette.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -59,6 +61,8 @@ from .schemas import (
     ProfileItem,
     ProfileListResponse,
     ProfileLearnFromTextsRequest,
+    MasterOutlineAutoGenerateRequest,
+    StyleEvolutionRequest,
     ProfileSetActiveVersionRequest,
     ProfileUpdateRequest,
     BookProfileLinkRequest,
@@ -89,10 +93,12 @@ from .services.event_bus import event_bus, stream_sse
 from .services.book_tension import get_latest_book_tension_report
 from .services.jobs import job_runner
 from .services.job_examples import JOB_EXAMPLES
+from .services.draft_commit import run_commit_draft_job
 from .services.ledger import apply_from_skill_run
 from .services.search import hybrid_search
 from .services.tension import apply_tension_patches
 from .services.tension import compare_eval_runs, get_outline_detail_diff
+from .services.tension import delete_outline_detail as delete_outline_detail_service
 from .services.tension import get_outline_detail as get_outline_detail_service
 from .services.tension import get_latest_skill_run as get_latest_skill_run_service
 from .services.tension import get_skill_run_output
@@ -102,6 +108,18 @@ from .services.tension import evaluate_tension_score_v1
 from .services.mechanics import mechanics_preview
 from .services.reporting import create_chapter_revision_report
 from .services.similarity import run_similarity_guard_text_job
+from .services.splitbooks import (
+    build_splitbook_chapter_pack,
+    build_splitbook_outline,
+    build_splitbook_template_library,
+    get_splitbook_ledger_view,
+    get_splitbook_pair_view,
+    get_splitbook_qa_report,
+    get_splitbook_scene_view,
+    splitbook_anti_copy_check,
+    splitbook_chapter_health_report,
+    writeback_splitbook_chapter,
+)
 from .services.storage import (
     add_template_source,
     create_book,
@@ -109,13 +127,18 @@ from .services.storage import (
     create_repair_effect_sample,
     create_job,
     create_profile,
+    delete_book,
+    delete_chapter,
     clone_profile,
     bind_book_profile,
     list_book_profiles,
     get_profile,
+    delete_profile,
     create_skill_run,
     create_template,
+    delete_structure_template,
     create_splitbook,
+    delete_splitbook,
     fetch_system_info,
     get_book_settings,
     get_chapter_settings,
@@ -136,6 +159,10 @@ from .services.storage import (
     health_checks,
     get_job,
     list_jobs,
+    delete_jobs,
+    delete_job_by_id,
+    delete_jobs_by_splitbook,
+    delete_dangling_splitbook_jobs,
     list_books,
     list_arc_targets,
     list_chapters,
@@ -160,6 +187,7 @@ from .services.storage import (
     set_ref_inbox_status,
     list_template_assets,
     get_template_asset,
+    delete_template_asset,
     unified_search,
     log_template_usage,
     recommend_templates,
@@ -180,11 +208,162 @@ from .services.prompt_templates import STRICT_JSON_SYSTEM_PROMPT, build_material
 from .services.schema_validate import validate_material_extract_output
 from sqlalchemy.exc import IntegrityError
 from .services.template_evolution import merge_actions
+from .services.style_evolution import evolve_book_style, get_latest_style_evolution
+from .services.story_engine import (
+    build_writing_memory_pack,
+    build_chapter_engine_pack,
+    build_chapter_repair_plan,
+    create_story_bible_proposal,
+    get_story_engine_quality_metrics,
+    run_story_engine_regression,
+    get_writing_session_state,
+    get_story_bible_snapshot,
+    get_story_engine_dashboard,
+    list_story_bible_proposals,
+    review_story_bible_proposal,
+    run_chapter_engine_audit,
+    upsert_writing_session_state,
+    validate_and_writeback_memory,
+)
+from .services.model_router import route_story_model
 from .observability import configure_logging, set_request_id, reset_request_id, get_logger
 
 app = FastAPI(title="WriterBook Engine", version="0.2.0")
 configure_logging()
 logger = get_logger("api")
+
+ERROR_ZH_MAP: dict[str, str] = {
+    "INVALID_DIFF_BODY": "差异请求体格式无效",
+    "PRESET_NAME_REQUIRED": "缺少预设名称",
+    "PRESET_NOT_FOUND": "未找到预设",
+    "INVALID_SCOPE": "作用域参数无效",
+    "INVALID_MODE": "模式参数无效",
+    "BOOK_NOT_FOUND": "未找到书籍",
+    "CHAPTER_NOT_FOUND": "未找到章节",
+    "PROFILE_NOT_FOUND": "未找到画像",
+    "SPLITBOOK_NOT_FOUND": "未找到拆书档案",
+    "SPLITBOOK_JOB_RUNNING": "该拆书已有任务运行中",
+    "SPLITBOOK_EMBED_ALREADY_DONE": "该拆书已完成向量化，无需重复执行",
+    "JOB_NOT_FOUND": "未找到任务",
+    "FILE_NOT_FOUND": "文件不存在",
+    "DUPLICATE_CHAPTER_NO": "章节号重复",
+    "BOOK_ID_REQUIRED": "缺少书籍 ID",
+    "CHAPTER_ID_REQUIRED": "缺少章节 ID",
+    "INVALID_SETTINGS_JSON": "设置 JSON 格式错误",
+    "REPORT_HTML_EMPTY": "报告内容为空",
+    "EVAL_RESULT_NOT_FOUND": "评估结果不存在",
+    "CONTROL_PLAN_NOT_FOUND": "控制计划不存在",
+    "ONECLICK_NO_DRAFT_VERSION": "未找到可用草稿版本",
+    "SMARTRUN_NO_DRAFT_VERSION": "智能运行未找到可用草稿版本",
+    "OUTLINE_NOT_FOUND": "未找到章纲版本",
+    "MASTER_OUTLINE_AI_UNAVAILABLE": "总纲生成失败：AI 服务不可用",
+    "VOLUME_PLAN_AI_REQUIRED": "卷纲生成失败：必须启用 AI 生成",
+    "VOLUME_PLAN_AI_UNAVAILABLE": "卷纲生成失败：AI 服务不可用",
+    "EVAL_AI_REQUIRED": "张力评估失败：AI 服务不可用",
+    "CONTROL_PLAN_AI_REQUIRED": "控制计划失败：AI 服务不可用",
+    "ASSET_SNAPSHOT_NOT_FOUND": "未找到资产快照",
+    "ASSET_SNAPSHOT_ROLLBACK_FAILED": "资产快照回滚失败",
+    "ASSET_SNAPSHOT_CAPTURE_FAILED": "资产快照创建失败",
+    "DRAFT_DELETE_LAST_FORBIDDEN": "当前章节仅剩一个版本，不能删除",
+    "DRAFT_DELETE_NO_REPLACEMENT": "删除失败：没有可切换的替代版本",
+    "VOLUME_PLAN_DELETE_LAST_FORBIDDEN": "当前分卷仅剩一个方案版本，不能删除",
+    "VOLUME_PLAN_DELETE_NO_REPLACEMENT": "删除失败：没有可切换的替代分卷方案",
+    "CHAPTER_IMPORT_TEXT_EMPTY": "导入失败：章节正文不能为空",
+    "JOB_DELETE_RUNNING_FORBIDDEN": "运行中任务不允许删除，请先中止任务",
+    "JOB_RESUME_FORBIDDEN_DONE": "已完成任务不能继续",
+    "JOB_RESUME_FORBIDDEN_CANCELED": "已中止任务不能继续",
+    "JOB_RESUME_RUNNING_ACTIVE": "任务仍在活跃运行，请稍后再试或使用强制继续",
+    "AGENT_ORCHESTRATE_PHASE_INVALID": "总控阶段参数无效",
+    "AGENT_ORCHESTRATE_CONFIRM_REQUIRED": "该计划需要人工确认后才能执行",
+    "REQUEST_VALIDATION_ERROR": "请求参数校验失败",
+    "INTERNAL_SERVER_ERROR": "服务内部异常",
+}
+
+
+def _normalize_error_code(raw: str) -> str:
+    text_value = str(raw or "").strip().replace("Error:", "").strip()
+    if not text_value:
+        return ""
+    token = str(text_value.split(":")[0] or "").strip().upper()
+    if not token:
+        return ""
+    if not re.fullmatch(r"[A-Z0-9_.-]+", token or ""):
+        return ""
+    if "_" not in token and "." not in token and len(token) < 4:
+        return ""
+    return token
+
+
+def _translate_error_code_zh(code: str) -> str:
+    key = str(code or "").strip().upper()
+    if not key:
+        return ""
+    if key in ERROR_ZH_MAP:
+        return ERROR_ZH_MAP[key]
+    if key.endswith("_NOT_FOUND"):
+        return "请求资源不存在"
+    if key.endswith("_REQUIRED"):
+        return "缺少必填参数"
+    if key.endswith("_INVALID"):
+        return "输入参数无效"
+    if key.endswith("_TIMEOUT"):
+        return "请求处理超时"
+    if key.endswith("_LOAD_FAILED"):
+        return "加载失败"
+    if key.endswith("_SAVE_FAILED"):
+        return "保存失败"
+    if key.endswith("_CREATE_FAILED"):
+        return "创建失败"
+    if key.endswith("_UPDATE_FAILED"):
+        return "更新失败"
+    if key.endswith("_DELETE_FAILED"):
+        return "删除失败"
+    if key.endswith("_START_FAILED"):
+        return "启动失败"
+    if key.endswith("_RUN_FAILED"):
+        return "运行失败"
+    if key.endswith("_APPLY_FAILED"):
+        return "应用失败"
+    if key.endswith("_EXPORT_FAILED"):
+        return "导出失败"
+    if key.endswith("_FETCH_FAILED"):
+        return "读取失败"
+    if key.endswith("_COMPARE_FAILED"):
+        return "对比失败"
+    if key.endswith("_DIFF_FAILED"):
+        return "差异计算失败"
+    if key.endswith("_FAILED"):
+        return "操作执行失败"
+    if key.endswith("_ERROR"):
+        return "操作异常"
+    return ""
+
+
+def _build_error_payload(detail: object, rid: str) -> dict:
+    if isinstance(detail, str):
+        raw = detail.strip()
+        code = _normalize_error_code(raw)
+        zh = _translate_error_code_zh(code) if code else ""
+        payload = {
+            "detail": raw,
+            "detail_zh": zh or ("请求失败" if raw else "请求失败"),
+            "request_id": rid,
+        }
+        if code:
+            payload["detail_code"] = code
+        return payload
+    if isinstance(detail, dict):
+        payload = {"detail": detail, "detail_zh": "请求失败", "request_id": rid}
+        code = _normalize_error_code(str(detail.get("code") or detail.get("detail") or ""))
+        zh = _translate_error_code_zh(code)
+        if code:
+            payload["detail_code"] = code
+            if zh:
+                payload["detail_zh"] = zh
+        return payload
+    if isinstance(detail, list):
+        return {"detail": detail, "detail_code": "REQUEST_VALIDATION_ERROR", "detail_zh": "请求参数校验失败", "request_id": rid}
+    return {"detail": str(detail), "detail_zh": "请求失败", "request_id": rid}
 
 
 def _build_material_ref_block(card: dict, extract_json: dict) -> str:
@@ -232,6 +411,24 @@ def request_id(request: Request) -> str:
     return state_id or request.headers.get("x-request-id") or f"req_{int(datetime.now(timezone.utc).timestamp() * 1000)}"
 
 
+def _attach_trigger_meta(
+    payload: dict,
+    *,
+    trigger_source: str | None = None,
+    trigger_entry: str | None = None,
+    trigger_mode: str | None = None,
+) -> None:
+    source = str(trigger_source or "").strip()
+    if source:
+        payload["trigger_source"] = source[:240]
+    entry = str(trigger_entry or "").strip()
+    if entry:
+        payload["trigger_entry"] = entry[:180]
+    mode = str(trigger_mode or "").strip().lower()
+    if mode in {"manual", "recommended", "one_click", "auto"}:
+        payload["trigger_mode"] = mode
+
+
 @app.middleware("http")
 async def request_id_middleware(request: Request, call_next):
     rid = request.headers.get("x-request-id") or str(uuid4())
@@ -253,6 +450,48 @@ async def request_id_middleware(request: Request, call_next):
         },
     )
     return response
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    rid = request_id(request)
+    payload = _build_error_payload(exc.detail, rid)
+    return JSONResponse(status_code=exc.status_code, content=payload, headers=exc.headers or None)
+
+
+@app.exception_handler(RequestValidationError)
+async def request_validation_exception_handler(request: Request, exc: RequestValidationError):
+    rid = request_id(request)
+    payload = {
+        "detail": exc.errors(),
+        "detail_code": "REQUEST_VALIDATION_ERROR",
+        "detail_zh": "请求参数校验失败",
+        "request_id": rid,
+    }
+    return JSONResponse(status_code=422, content=payload)
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    rid = request_id(request)
+    logger.exception(
+        "http.unhandled_exception",
+        extra={
+            "request_id": rid,
+            "meta": {
+                "method": request.method,
+                "path": request.url.path,
+                "error": str(exc),
+            },
+        },
+    )
+    payload = {
+        "detail": "INTERNAL_SERVER_ERROR",
+        "detail_code": "INTERNAL_SERVER_ERROR",
+        "detail_zh": "服务内部异常，请查看日志后重试",
+        "request_id": rid,
+    }
+    return JSONResponse(status_code=500, content=payload)
 
 
 @app.on_event("startup")
@@ -346,10 +585,16 @@ async def rebuild_fts_route(db: AsyncSession = Depends(get_db)) -> dict:
 
 @app.post("/v1/system/cleanup_jobs")
 async def cleanup_jobs_route(db: AsyncSession = Depends(get_db)) -> dict:
-    await db.execute(text("DELETE FROM jobs WHERE status='succeeded' AND created_at < now() - interval '30 days'"))
-    await db.execute(text("DELETE FROM jobs WHERE status='failed' AND created_at < now() - interval '7 days'"))
+    done = await db.execute(text("DELETE FROM jobs WHERE status='succeeded' AND created_at < now() - interval '30 days'"))
+    failed = await db.execute(text("DELETE FROM jobs WHERE status='failed' AND created_at < now() - interval '7 days'"))
     await db.commit()
-    return {"ok": True}
+    dangling = await delete_dangling_splitbook_jobs(db, limit=50000, include_active=False)
+    return {
+        "ok": True,
+        "deleted_succeeded": int(done.rowcount or 0),
+        "deleted_failed": int(failed.rowcount or 0),
+        "deleted_dangling_splitbook_jobs": int(dangling),
+    }
 
 
 @app.post("/v1/system/rebuild_embeddings")
@@ -511,6 +756,278 @@ async def post_book_settings_route(book_id: UUID, body: dict, db: AsyncSession =
     return {"book_id": str(book_id), "settings": value}
 
 
+@app.post("/v1/books/{book_id}/master_outline/auto_generate")
+async def master_outline_auto_generate_route(
+    book_id: UUID,
+    body: MasterOutlineAutoGenerateRequest,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    row_book = await db.execute(
+        text("SELECT book_id::text AS book_id, title FROM book WHERE book_id=CAST(:book_id AS uuid)"),
+        {"book_id": str(book_id)},
+    )
+    book_row = row_book.mappings().first()
+    if not book_row:
+        raise HTTPException(status_code=404, detail="BOOK_NOT_FOUND")
+
+    settings_value = await get_book_settings(db, str(book_id)) or {}
+    brief_from_settings = settings_value.get("writing_brief") if isinstance(settings_value.get("writing_brief"), dict) else {}
+    genre = _normalize_brief_typos(str(body.genre or brief_from_settings.get("genre") or "").strip())
+    theme = _normalize_brief_typos(str(body.theme or brief_from_settings.get("theme") or "").strip())
+    tone = _normalize_brief_typos(str(body.tone or brief_from_settings.get("tone") or "").strip())
+    audience = _normalize_brief_typos(str(body.audience or brief_from_settings.get("audience") or "").strip())
+    idea = _normalize_brief_typos(str(body.idea or brief_from_settings.get("idea") or "").strip())
+    setting_text = _normalize_brief_typos(str(body.setting or brief_from_settings.get("setting") or "").strip())
+    brief_structured = _build_master_outline_brief_payload(
+        brief_from_settings,
+        overrides={
+            "genre": genre,
+            "theme": theme,
+            "tone": tone,
+            "audience": audience,
+            "idea": idea,
+            "setting": setting_text,
+        },
+    )
+
+    volume_items: list[dict[str, Any]] = [x.model_dump() for x in (body.volume_items or [])]
+    if not volume_items:
+        rows = await db.execute(
+            text(
+                """
+                SELECT volume_no, title, note, start_chapter_no, end_chapter_no, planned_chapters
+                FROM volume
+                WHERE book_id=CAST(:book_id AS uuid)
+                ORDER BY volume_no ASC
+                """
+            ),
+            {"book_id": str(book_id)},
+        )
+        volume_items = [dict(r) for r in rows.mappings().all()]
+    chapter_count_row = await db.execute(
+        text("SELECT COUNT(*) AS n FROM chapter WHERE book_id=CAST(:book_id AS uuid)"),
+        {"book_id": str(book_id)},
+    )
+    chapter_count = int((chapter_count_row.mappings().first() or {}).get("n") or 0)
+
+    planned_from_vol = 0
+    for vol in volume_items:
+        p = int(vol.get("planned_chapters") or 0)
+        if p > 0:
+            planned_from_vol += p
+            continue
+        s = int(vol.get("start_chapter_no") or 0)
+        e = int(vol.get("end_chapter_no") or 0)
+        if s > 0 and e >= s:
+            planned_from_vol += e - s + 1
+    planned_hint = max(1, int(body.planned_chapters or 0), int(planned_from_vol or 0), int(chapter_count or 0))
+
+    hints = _normalize_structure_hints(body.model_dump())
+    splitbook_id = str(body.splitbook_id) if body.splitbook_id else ""
+    material_guidance = _extract_material_guidance_from_refs([str(x) for x in (body.material_refs or [])][:30])
+    material_rows = await db.execute(
+        text(
+            """
+            SELECT title, content, tag, importance
+            FROM material_card
+            WHERE book_id=CAST(:book_id AS uuid)
+            ORDER BY importance DESC, created_at DESC
+            LIMIT 40
+            """
+        ),
+        {"book_id": str(book_id)},
+    )
+    material_library_guidance: list[str] = []
+    for row in material_rows.mappings().all():
+        title = str(row.get("title") or "").strip()
+        content = str(row.get("content") or "").strip()
+        tag = str(row.get("tag") or "").strip()
+        if not (title or content):
+            continue
+        line = f"{title}｜{content[:140]}{f'｜tag={tag}' if tag else ''}"
+        if line not in material_library_guidance:
+            material_library_guidance.append(line)
+        if len(material_library_guidance) >= 20:
+            break
+    splitbook_outline_reference: dict[str, Any] = {}
+    if splitbook_id:
+        hints = await _merge_splitbook_hints(db, splitbook_id=splitbook_id, hints=hints)
+        splitbook_outline_reference = await _build_splitbook_outline_reference(db, splitbook_id=splitbook_id)
+    hint_count = int(hints.get("total_lines") or 0)
+    safe_structure_hints = _outline_safe_structure_hints(hints)
+    brief_protected_lines = _collect_brief_source_lines(genre, theme, tone, audience, idea, setting_text)
+    extended_brief = brief_structured.get("extended") if isinstance(brief_structured.get("extended"), dict) else {}
+    for value in extended_brief.values():
+        for line in _collect_brief_source_lines(str(value or "")):
+            if line not in brief_protected_lines:
+                brief_protected_lines.append(line)
+    prompt_reference_text, prompt_reference_source = _load_master_outline_prompt_reference()
+
+    prompt_payload = {
+        "book_title": str(book_row.get("title") or ""),
+        "brief": {
+            "genre": genre,
+            "theme": theme,
+            "tone": tone,
+            "audience": audience,
+            "idea": idea,
+            "setting": setting_text,
+        },
+        "brief_structured": brief_structured,
+        "planned_chapters_hint": planned_hint,
+        "volumes": [
+            {
+                "name": str(v.get("title") or f"卷{v.get('volume_no') or ''}").strip(),
+                "goal_hint": str(v.get("note") or "").strip(),
+                "chapter_range": (
+                    f"{int(v.get('start_chapter_no') or 0)}-{int(v.get('end_chapter_no') or 0)}"
+                    if int(v.get("start_chapter_no") or 0) > 0 and int(v.get("end_chapter_no") or 0) >= int(v.get("start_chapter_no") or 0)
+                    else ""
+                ),
+            }
+            for v in volume_items[:20]
+        ],
+        "structure_hints": safe_structure_hints,
+        "material_guidance": material_guidance,
+        "material_library_guidance": material_library_guidance,
+        "splitbook_outline_reference": splitbook_outline_reference,
+        "requirements": {
+            "anti_copy": "只可借鉴结构规律，禁止复述来源文本",
+            "continuity": "后续必须支持总纲->卷纲->章纲一致",
+            "language": "简体中文",
+            "structure_hint_input_mode": "tag_only",
+            "forbid_copy_from_brief": True,
+            "outline_summary_min_chars": 120,
+            "prioritize_material_guidance": True,
+        },
+    }
+    user_prompt = (
+        "请你作为网文策划编辑，生成全书级总纲 JSON。\n"
+        "要求：\n"
+        "1) 只输出 JSON，不要 Markdown。\n"
+        "2) total outline 要可执行，可直接用于后续卷纲/章纲。\n"
+        "3) 若给了结构提示，仅可抽象借鉴，禁止复述原文。\n"
+        "4) phases 需要覆盖阶段推进与章节范围。\n\n"
+        f"输入:\n{json.dumps(prompt_payload, ensure_ascii=False)}"
+    )
+    schema_hint = (
+        '{"summary":"string","premise":"string","core_conflict":"string","theme":"string","audience":"string",'
+        '"planned_chapters":120,"phases":[{"name":"第一阶段","goal":"string","chapter_range":"1-30"}],'
+        '"constraints":{"anti_copy":"string","continuity":"string"}}'
+    )
+    system_prompt = (
+        "你是小说策划编辑。只输出合法 JSON。\n"
+        "生成依据必须优先使用创作简报；拆书资料只允许借鉴结构节奏，不允许复述。\n"
+        "以下是总纲生成提示词参考（Markdown）：\n"
+        f"{prompt_reference_text}"
+    )
+    generation_mode = "llm"
+    generation_error = ""
+    try:
+        client = OllamaClient(settings.ollama_host)
+        raw = await client.chat_json(
+            model=str(body.llm_model or DEFAULT_LLM_MODEL),
+            user=user_prompt,
+            system=system_prompt,
+            temperature=0.25,
+            max_tokens=2200,
+            timeout_s=180,
+            retries=1,
+            schema_hint=schema_hint,
+            validate=_validate_master_outline_ai_json,
+            meta={
+                "route": "master_outline_auto_generate",
+                "book_id": str(book_id),
+                "splitbook_hint_count": hint_count,
+            },
+        )
+    except Exception as exc:
+        generation_error = str(exc)
+        raise HTTPException(status_code=503, detail=f"MASTER_OUTLINE_AI_UNAVAILABLE:{generation_error[:180]}") from exc
+
+    normalized = _normalize_master_outline_ai_json(
+        raw if isinstance(raw, dict) else {},
+        fallback_planned=planned_hint,
+        hint_count=hint_count,
+    )
+    hint_lines = _collect_hint_lines(hints)
+    anti_copy_source_lines = []
+    for line in (hint_lines + brief_protected_lines):
+        txt = str(line or "").strip()
+        if txt and txt not in anti_copy_source_lines:
+            anti_copy_source_lines.append(txt)
+    normalized, anti_copy_rewritten_fields = _apply_master_outline_anti_copy_guard(
+        normalized,
+        source_hint_lines=anti_copy_source_lines,
+        theme=theme,
+        audience=audience,
+        setting_text=setting_text,
+        idea=idea,
+    )
+    normalized = _enrich_master_outline_summary(normalized)
+    if not normalized.get("summary"):
+        normalized["summary"] = _fallback_outline_texts(theme=theme, audience=audience, setting_text=setting_text, idea=idea)["summary"]
+    basis: list[str] = ["writing_brief", "writing_brief_structured", "volume_items", "book_db_context", "prompt_md_template"]
+    if chapter_count > 0:
+        basis.append("chapter_items_db")
+    if splitbook_id:
+        basis.append("splitbook_selected")
+    if splitbook_outline_reference:
+        basis.append("splitbook_outline_structure")
+    if isinstance(body.material_refs, list) and len(body.material_refs) > 0:
+        basis.append("material_refs")
+    if material_guidance:
+        basis.append("material_guidance")
+    if material_library_guidance:
+        basis.append("material_library")
+    if hint_count > 0:
+        basis.append("splitbook_structure_hints" if splitbook_id else "manual_structure_hints")
+    return {
+        "ok": True,
+        "book_id": str(book_id),
+        "outline": normalized,
+        "meta": {
+            "provider": "ollama" if generation_mode == "llm" else "fallback",
+            "model": str(body.llm_model or DEFAULT_LLM_MODEL),
+            "structure_hints_applied": hint_count,
+            "structure_hint_sources": [str(x) for x in (hints.get("sources") or []) if str(x).strip()][:8],
+            "structure_hint_mode": "tag_only",
+            "brief_protected_lines": len(brief_protected_lines),
+            "material_guidance_count": len(material_guidance),
+            "material_library_count": len(material_library_guidance),
+            "prompt_template_source": prompt_reference_source,
+            "splitbook_outline_reference": {
+                "chapter_total": int(splitbook_outline_reference.get("chapter_total") or 0),
+                "phase_count": len(splitbook_outline_reference.get("phase_skeleton") or []),
+            },
+            "db_context": {
+                "book_title": str(book_row.get("title") or ""),
+                "chapter_count": int(chapter_count),
+                "volume_count": len(volume_items),
+                "planned_chapters_hint": int(planned_hint),
+            },
+            "basis": basis,
+            "generation_mode": generation_mode,
+            "fallback_reason": generation_error[:200] if generation_mode != "llm" and generation_error else "",
+            "anti_copy_guard_triggered": bool(anti_copy_rewritten_fields),
+            "anti_copy_rewritten_fields": anti_copy_rewritten_fields,
+            "ai_debug": {
+                "route": "master_outline_auto_generate",
+                "provider": "ollama" if generation_mode == "llm" else "fallback",
+                "model": str(body.llm_model or DEFAULT_LLM_MODEL),
+                "prompt_payload": prompt_payload,
+                "system_prompt": system_prompt,
+                "user_prompt": user_prompt,
+                "schema_hint": schema_hint,
+                "basis": basis,
+                "prompt_template_source": prompt_reference_source,
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+            },
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        },
+    }
+
+
 @app.get("/v1/chapters/{chapter_id}/settings")
 async def get_chapter_settings_route(chapter_id: UUID, db: AsyncSession = Depends(get_db)) -> dict:
     value = await get_chapter_settings(db, str(chapter_id))
@@ -535,6 +1052,248 @@ async def get_chapter_effective_settings_route(chapter_id: UUID, db: AsyncSessio
     return {"chapter_id": str(chapter_id), **out}
 
 
+@app.get("/v1/books/{book_id}/ai_debug")
+async def get_book_ai_debug_route(
+    book_id: UUID,
+    chapter_id: UUID | None = Query(default=None),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    row_book = await db.execute(
+        text("SELECT book_id::text AS book_id, title FROM book WHERE book_id=CAST(:book_id AS uuid) LIMIT 1"),
+        {"book_id": str(book_id)},
+    )
+    book_hit = row_book.mappings().first()
+    if not book_hit:
+        raise HTTPException(status_code=404, detail="BOOK_NOT_FOUND")
+
+    book_settings = await get_book_settings(db, str(book_id))
+    book_settings_obj = book_settings if isinstance(book_settings, dict) else {}
+    master_meta = (
+        book_settings_obj.get("writing_master_outline_meta")
+        if isinstance(book_settings_obj.get("writing_master_outline_meta"), dict)
+        else {}
+    )
+    master_ai_debug = master_meta.get("ai_debug") if isinstance(master_meta.get("ai_debug"), dict) else {}
+
+    chapter_id_text = str(chapter_id) if chapter_id else ""
+    chapter_meta: dict[str, Any] = {}
+    chapter_ai_debug: dict[str, Any] = {}
+    chapter_title = ""
+    chapter_no = 0
+    volume_id_for_audit = ""
+    volume_no_for_audit = 0
+    volume_title_for_audit = ""
+    if chapter_id_text:
+        row_chapter = await db.execute(
+            text(
+                """
+                SELECT chapter_id::text AS chapter_id, title, "order" AS chapter_no
+                FROM chapter
+                WHERE chapter_id=CAST(:chapter_id AS uuid) AND book_id=CAST(:book_id AS uuid)
+                LIMIT 1
+                """
+            ),
+            {"chapter_id": chapter_id_text, "book_id": str(book_id)},
+        )
+        chapter_hit = row_chapter.mappings().first()
+        if not chapter_hit:
+            raise HTTPException(status_code=404, detail="CHAPTER_NOT_FOUND")
+        chapter_title = str(chapter_hit.get("title") or "")
+        chapter_no = int(chapter_hit.get("chapter_no") or 0)
+        chapter_settings = await get_chapter_settings(db, chapter_id_text)
+        chapter_settings_obj = chapter_settings if isinstance(chapter_settings, dict) else {}
+        chapter_meta = (
+            chapter_settings_obj.get("writing_chapter_outline_meta")
+            if isinstance(chapter_settings_obj.get("writing_chapter_outline_meta"), dict)
+            else {}
+        )
+        chapter_ai_debug = chapter_meta.get("ai_debug") if isinstance(chapter_meta.get("ai_debug"), dict) else {}
+        row_volume = await db.execute(
+            text(
+                """
+                SELECT v.volume_id::text AS volume_id, v.volume_no, v.title
+                FROM chapter c
+                JOIN volume v
+                  ON v.book_id=c.book_id
+                 AND c."order" BETWEEN v.start_chapter_no AND v.end_chapter_no
+                WHERE c.chapter_id=CAST(:chapter_id AS uuid)
+                  AND c.book_id=CAST(:book_id AS uuid)
+                ORDER BY v.volume_no DESC
+                LIMIT 1
+                """
+            ),
+            {"chapter_id": chapter_id_text, "book_id": str(book_id)},
+        )
+        volume_hit = row_volume.mappings().first()
+        if volume_hit:
+            volume_id_for_audit = str(volume_hit.get("volume_id") or "")
+            volume_no_for_audit = int(volume_hit.get("volume_no") or 0)
+            volume_title_for_audit = str(volume_hit.get("title") or "")
+    else:
+        row_volume = await db.execute(
+            text(
+                """
+                SELECT v.volume_id::text AS volume_id, v.volume_no, v.title
+                FROM volume_plan p
+                JOIN volume v ON v.volume_id=p.volume_id
+                WHERE p.book_id=CAST(:book_id AS uuid) AND p.status='active'
+                ORDER BY p.version DESC, p.updated_at DESC
+                LIMIT 1
+                """
+            ),
+            {"book_id": str(book_id)},
+        )
+        volume_hit = row_volume.mappings().first()
+        if volume_hit:
+            volume_id_for_audit = str(volume_hit.get("volume_id") or "")
+            volume_no_for_audit = int(volume_hit.get("volume_no") or 0)
+            volume_title_for_audit = str(volume_hit.get("title") or "")
+
+    volume_plan_active = await _load_active_volume_plan(db, book_id=str(book_id), volume_id=volume_id_for_audit) if volume_id_for_audit else None
+    volume_plan_assumptions = (
+        volume_plan_active.get("assumptions")
+        if isinstance(volume_plan_active, dict) and isinstance(volume_plan_active.get("assumptions"), dict)
+        else {}
+    )
+    volume_plan_ai_refine = (
+        volume_plan_assumptions.get("ai_refine")
+        if isinstance(volume_plan_assumptions.get("ai_refine"), dict)
+        else {}
+    )
+
+    run_sql = """
+        SELECT run_id::text AS run_id, workflow_id, status, started_at, ended_at, error, meta, chapter_id::text AS chapter_id
+        FROM workflow_run
+        WHERE workflow_id='draft_runner_v1' AND book_id=CAST(:book_id AS uuid)
+    """
+    run_params: dict[str, Any] = {"book_id": str(book_id)}
+    if chapter_id_text:
+        run_sql += " AND chapter_id=CAST(:chapter_id AS uuid)"
+        run_params["chapter_id"] = chapter_id_text
+    run_sql += " ORDER BY started_at DESC LIMIT 1"
+
+    run_row = await db.execute(text(run_sql), run_params)
+    run_hit = run_row.mappings().first()
+    draft_generation: dict[str, Any] = {}
+    if run_hit:
+        run_id_text = str(run_hit.get("run_id") or "")
+        steps_row = await db.execute(
+            text(
+                """
+                SELECT node_id, status, input, output, metrics, error, started_at, ended_at
+                FROM workflow_step
+                WHERE run_id=CAST(:run_id AS uuid)
+                ORDER BY started_at ASC, node_id ASC
+                """
+            ),
+            {"run_id": run_id_text},
+        )
+        steps = [dict(x) for x in steps_row.mappings().all()]
+        step_by_node = {str(s.get("node_id") or ""): s for s in steps}
+        compose_step = step_by_node.get("compose_prompt") or {}
+        llm_step = step_by_node.get("llm_generate") or {}
+        compose_output = compose_step.get("output") if isinstance(compose_step.get("output"), dict) else {}
+        llm_output_wrap = llm_step.get("output") if isinstance(llm_step.get("output"), dict) else {}
+        llm_output = llm_output_wrap.get("llm_output") if isinstance(llm_output_wrap.get("llm_output"), dict) else {}
+        draft_generation = {
+            "run": {
+                "run_id": run_id_text,
+                "workflow_id": str(run_hit.get("workflow_id") or ""),
+                "status": str(run_hit.get("status") or ""),
+                "started_at": run_hit.get("started_at"),
+                "ended_at": run_hit.get("ended_at"),
+                "chapter_id": str(run_hit.get("chapter_id") or ""),
+                "error": run_hit.get("error") if isinstance(run_hit.get("error"), dict) else {},
+            },
+            "compose_prompt": {
+                "status": str(compose_step.get("status") or ""),
+                "prompt": str(compose_output.get("prompt") or ""),
+                "prompt_blocks": compose_output.get("prompt_blocks") if isinstance(compose_output.get("prompt_blocks"), dict) else {},
+            },
+            "llm_generate": {
+                "status": str(llm_step.get("status") or ""),
+                "input": llm_step.get("input") if isinstance(llm_step.get("input"), dict) else {},
+                "model": str(llm_output.get("model") or ""),
+                "stubbed": bool(llm_output.get("stubbed", False)),
+                "latency_ms": int(llm_output.get("latency_ms") or 0),
+                "tokens_in_est": int(llm_output.get("tokens_in_est") or 0),
+                "tokens_out_est": int(llm_output.get("tokens_out_est") or 0),
+                "chapter_text_preview": str(llm_output.get("chapter_text") or "")[:2000],
+                "events_json": llm_output.get("events_json") if isinstance(llm_output.get("events_json"), dict) else {},
+            },
+        }
+
+    step_12_ok = bool(master_ai_debug) and bool(str(master_ai_debug.get("user_prompt") or "").strip())
+    step_13_ok = bool(volume_plan_ai_refine.get("enabled")) and int(volume_plan_ai_refine.get("sample_size") or 0) > 0
+    step_14_ok = bool(chapter_ai_debug) and bool(str(chapter_ai_debug.get("user_prompt") or "").strip())
+    llm_gen = draft_generation.get("llm_generate") if isinstance(draft_generation.get("llm_generate"), dict) else {}
+    step_15_ok = (
+        bool(draft_generation)
+        and bool(str(llm_gen.get("model") or "").strip())
+        and not bool(llm_gen.get("stubbed"))
+        and str(draft_generation.get("run", {}).get("status") or "").lower() == "succeeded"
+    )
+    ai_compliance = {
+        "overall_ok": bool(step_12_ok and step_13_ok and step_14_ok and step_15_ok),
+        "stages": {
+            "1.2": {
+                "label": "总纲生成",
+                "required_ai": True,
+                "ok": bool(step_12_ok),
+                "reason": "" if step_12_ok else "未找到总纲 AI 调用记录",
+            },
+            "1.3": {
+                "label": "卷纲生成/应用",
+                "required_ai": True,
+                "ok": bool(step_13_ok),
+                "reason": "" if step_13_ok else "卷纲 AI refine 未命中或无有效样本",
+            },
+            "1.4": {
+                "label": "章纲生成",
+                "required_ai": True,
+                "ok": bool(step_14_ok),
+                "reason": "" if step_14_ok else "未找到章纲 AI 调用记录",
+            },
+            "1.5": {
+                "label": "章节生成",
+                "required_ai": True,
+                "ok": bool(step_15_ok),
+                "reason": "" if step_15_ok else "未找到成功的非 Stub LLM 章节生成记录",
+            },
+        },
+    }
+
+    return {
+        "ok": True,
+        "book": {
+            "book_id": str(book_id),
+            "title": str(book_hit.get("title") or ""),
+        },
+        "chapter": {
+            "chapter_id": chapter_id_text or None,
+            "chapter_no": chapter_no if chapter_id_text else None,
+            "title": chapter_title or None,
+        },
+        "master_outline": {
+            "meta": master_meta,
+            "ai_debug": master_ai_debug,
+        },
+        "chapter_outline": {
+            "meta": chapter_meta,
+            "ai_debug": chapter_ai_debug,
+        },
+        "volume_plan": {
+            "volume_id": volume_id_for_audit or None,
+            "volume_no": volume_no_for_audit or None,
+            "title": volume_title_for_audit or None,
+            "ai_refine": volume_plan_ai_refine,
+        },
+        "draft_generation": draft_generation,
+        "ai_compliance": ai_compliance,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 @app.post("/v1/books", response_model=BookItem)
 async def create_book_route(body: BookCreateRequest, db: AsyncSession = Depends(get_db)) -> BookItem:
     row = await create_book(db, body.title, body.author, body.language, body.notes)
@@ -549,6 +1308,14 @@ async def list_books_route(
 ) -> BookListResponse:
     rows = await list_books(db, query=query, limit=limit)
     return BookListResponse(items=[BookItem(**row) for row in rows])
+
+
+@app.delete("/v1/books/{book_id}")
+async def delete_book_route(book_id: str, db: AsyncSession = Depends(get_db)) -> dict:
+    row = await delete_book(db, str(book_id))
+    if not row:
+        raise HTTPException(status_code=404, detail="BOOK_NOT_FOUND")
+    return {"ok": True, "deleted": row}
 
 
 @app.post("/v1/books/{book_id}/chapters", response_model=ChapterItem)
@@ -581,6 +1348,65 @@ async def list_chapters_route(
 ) -> dict:
     rows = await list_chapters(db, str(book_id), query=query, limit=limit)
     return {"chapters": [ChapterItem(**row).model_dump() for row in rows]}
+
+
+@app.get("/v1/books/{book_id}/draft_confirmations")
+async def book_draft_confirmations_route(
+    book_id: UUID,
+    limit: int = Query(default=500, ge=1, le=2000),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    rows = await db.execute(
+        text(
+            """
+            SELECT
+              c.chapter_id::text AS chapter_id,
+              c."order" AS chapter_no,
+              c.title AS chapter_title,
+              c.active_draft_id::text AS active_draft_id,
+              cs.selected_draft_id::text AS selected_draft_id,
+              cs.selected_branch,
+              cs.selected_by,
+              cs.selected_reason,
+              cs.selected_at,
+              d.created_at AS selected_draft_created_at,
+              d.run_id::text AS selected_run_id
+            FROM chapter c
+            LEFT JOIN chapter_selected cs ON cs.chapter_id=c.chapter_id
+            LEFT JOIN chapter_draft d ON d.draft_id=cs.selected_draft_id
+            WHERE c.book_id=CAST(:book_id AS uuid)
+            ORDER BY c."order" ASC
+            LIMIT :limit
+            """
+        ),
+        {"book_id": str(book_id), "limit": int(limit)},
+    )
+    items = []
+    confirmed = 0
+    for r in rows.mappings().all():
+        x = dict(r)
+        selected_draft_id = str(x.get("selected_draft_id") or "").strip()
+        x["confirm_status"] = "confirmed" if selected_draft_id else "pending"
+        if selected_draft_id:
+            confirmed += 1
+        items.append(x)
+    total = len(items)
+    return {
+        "ok": True,
+        "book_id": str(book_id),
+        "total": total,
+        "confirmed": confirmed,
+        "pending": max(0, total - confirmed),
+        "items": items,
+    }
+
+
+@app.delete("/v1/chapters/{chapter_id}")
+async def delete_chapter_route(chapter_id: UUID, db: AsyncSession = Depends(get_db)) -> dict:
+    row = await delete_chapter(db, str(chapter_id))
+    if not row:
+        raise HTTPException(status_code=404, detail="CHAPTER_NOT_FOUND")
+    return {"ok": True, "deleted": row}
 
 
 @app.get("/v1/books/{book_id}/volumes")
@@ -1071,6 +1897,887 @@ async def _pick_structure_combos_for_plan(
             if str(picked.get("rotation_group") or ""):
                 used_group.add(str(picked.get("rotation_group")))
     return {"selected": selected}
+
+
+def _extract_structure_hints_from_material_refs(material_refs: list[str] | None) -> dict[str, Any]:
+    refs = [str(x) for x in (material_refs or []) if str(x).strip()]
+    out: dict[str, Any] = {
+        "sources": [],
+        "conflicts": [],
+        "foreshadows": [],
+        "payoffs": [],
+        "growths": [],
+        "strategies": [],
+    }
+    if not refs:
+        out["total_lines"] = 0
+        return out
+    source_set: set[str] = set()
+
+    def _append_unique(bucket: list[str], line: str, limit: int = 8) -> None:
+        txt = re.sub(r"^\s*[-*•]\s*", "", str(line or "")).strip()
+        if not txt or txt.startswith("（待补充"):
+            return
+        if txt in bucket:
+            return
+        if len(bucket) >= limit:
+            return
+        bucket.append(txt)
+
+    section_map = {
+        "conflicts": "【冲突驱动（可复用结构）】",
+        "foreshadows": "【伏笔铺设（仅结构，不取原句）】",
+        "payoffs": "【回收节点（仅策略，不取原句）】",
+        "growths": "【角色成长维度（成长/代价/压力/收获）】",
+        "strategies": "【节奏与调参建议】",
+    }
+    for block in refs:
+        if "[拆书结构引用]" not in block:
+            continue
+        m_source = re.search(r"source_splitbook_name=([^\n\r]+)", block, flags=re.IGNORECASE)
+        if m_source:
+            src = str(m_source.group(1) or "").strip()
+            if src:
+                source_set.add(src)
+        for key, heading in section_map.items():
+            m = re.search(rf"{re.escape(heading)}\s*([\s\S]*?)(?:\n【|$)", block, flags=re.MULTILINE)
+            if not m:
+                continue
+            for line in str(m.group(1) or "").splitlines():
+                _append_unique(out[key], line)
+    out["sources"] = sorted(list(source_set))[:8]
+    out["total_lines"] = sum(len(out[k]) for k in ("conflicts", "foreshadows", "payoffs", "growths", "strategies"))
+    return out
+
+
+def _extract_splitbook_ids_from_material_refs(material_refs: list[str] | None) -> list[str]:
+    refs = [str(x) for x in (material_refs or []) if str(x).strip()]
+    out: list[str] = []
+    for block in refs:
+        if "[拆书结构引用]" not in block:
+            continue
+        found = re.findall(r"source_splitbook_id=([0-9a-fA-F-]{16,64})", block, flags=re.IGNORECASE)
+        for sid in found:
+            s = str(sid or "").strip()
+            if s and s not in out:
+                out.append(s)
+    return out[:8]
+
+
+def _extract_material_guidance_from_refs(material_refs: list[str] | None) -> list[str]:
+    refs = [str(x) for x in (material_refs or []) if str(x).strip()]
+    out: list[str] = []
+    for block in refs:
+        txt = str(block or "").strip()
+        if not txt:
+            continue
+        if txt.startswith("[拆书结构引用]"):
+            continue
+        lines = [re.sub(r"^\s*[-*•]\s*", "", ln).strip() for ln in txt.splitlines()]
+        for ln in lines:
+            if not ln:
+                continue
+            if ln.startswith("[") and "]" in ln:
+                continue
+            if len(ln) < 4:
+                continue
+            if ln not in out:
+                out.append(ln[:220])
+            if len(out) >= 20:
+                return out
+    return out
+
+
+def _resolve_splitbook_id_from_body(body: dict | None) -> str:
+    payload = body or {}
+    splitbook_id = str(payload.get("splitbook_id") or "").strip()
+    if splitbook_id:
+        return splitbook_id
+    refs = payload.get("material_refs") if isinstance(payload.get("material_refs"), list) else []
+    ids = _extract_splitbook_ids_from_material_refs([str(x) for x in refs][:30])
+    return ids[0] if ids else ""
+
+
+def _normalize_structure_hints(body: dict | None) -> dict[str, Any]:
+    payload = body or {}
+    hints_raw = payload.get("structure_hints") if isinstance(payload.get("structure_hints"), dict) else {}
+    material_refs = payload.get("material_refs") if isinstance(payload.get("material_refs"), list) else []
+    from_refs = _extract_structure_hints_from_material_refs([str(x) for x in material_refs][:30])
+    out: dict[str, Any] = {}
+    for key in ("sources", "conflicts", "foreshadows", "payoffs", "growths", "strategies"):
+        vals: list[str] = []
+        src_a = hints_raw.get(key) if isinstance(hints_raw, dict) else []
+        if isinstance(src_a, list):
+            vals.extend([str(x).strip() for x in src_a if str(x).strip()])
+        src_b = from_refs.get(key) if isinstance(from_refs.get(key), list) else []
+        vals.extend([str(x).strip() for x in src_b if str(x).strip()])
+        dedup: list[str] = []
+        for v in vals:
+            if v and v not in dedup:
+                dedup.append(v)
+        out[key] = dedup[:8]
+    out["total_lines"] = sum(len(out[k]) for k in ("conflicts", "foreshadows", "payoffs", "growths", "strategies"))
+    return out
+
+
+def _normalize_brief_typos(text: str) -> str:
+    s = str(text or "").strip()
+    if not s:
+        return ""
+    typo_map = {
+        "啥法果断": "杀伐果断",
+        "沙伐果断": "杀伐果断",
+        "杀阀果断": "杀伐果断",
+        "节凑": "节奏",
+        "设定集定": "设定",
+    }
+    for wrong, right in typo_map.items():
+        s = s.replace(wrong, right)
+    s = re.sub(r"[ \t\r\f\v]+", " ", s).strip()
+    return s
+
+
+def _collect_brief_source_lines(*texts: str) -> list[str]:
+    out: list[str] = []
+    for raw in texts:
+        txt = _normalize_brief_typos(str(raw or ""))
+        if not txt:
+            continue
+        if txt not in out:
+            out.append(txt)
+        parts = re.split(r"[，。；、/|：:,.!?！？\-\s]+", txt)
+        for p in parts:
+            seg = str(p or "").strip()
+            if len(seg) < 4:
+                continue
+            if seg not in out:
+                out.append(seg)
+    return out[:120]
+
+
+def _build_master_outline_brief_payload(
+    base: dict[str, Any] | None,
+    *,
+    overrides: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    src = base if isinstance(base, dict) else {}
+    out: dict[str, Any] = {}
+    known = ("genre", "theme", "tone", "audience", "idea", "setting")
+    for key in known:
+        override_value = str((overrides or {}).get(key) or "").strip()
+        raw_value = override_value or str(src.get(key) or "").strip()
+        norm = _normalize_brief_typos(raw_value)
+        if norm:
+            out[key] = norm[:500]
+    extended: dict[str, str] = {}
+    for key, value in src.items():
+        k = str(key or "").strip()
+        if not k or k in known or k == "updated_at":
+            continue
+        if isinstance(value, (dict, list)):
+            txt = json.dumps(value, ensure_ascii=False)
+        else:
+            txt = str(value or "").strip()
+        norm = _normalize_brief_typos(txt)
+        if norm:
+            extended[k[:80]] = norm[:500]
+    if extended:
+        out["extended"] = extended
+    return out
+
+
+def _load_master_outline_prompt_reference() -> tuple[str, str]:
+    prompt_path = (Path(__file__).resolve().parents[2] / "docs" / "prompts" / "master_outline_prompt.md").resolve()
+    fallback = (
+        "# 总纲生成参考\n"
+        "- 优先依据创作简报生成主线与阶段推进。\n"
+        "- 拆书资料仅用于结构节奏，不得复述原文。\n"
+        "- 输出必须支持卷纲与章纲继续生成。\n"
+    )
+    try:
+        content = prompt_path.read_text(encoding="utf-8").strip()
+        if content:
+            return content[:5000], str(prompt_path)
+    except Exception:
+        pass
+    return fallback, "builtin:master_outline_prompt"
+
+
+def _slice_chapter_range(chapters: list[dict[str, Any]], start: int, end: int) -> str:
+    if not chapters:
+        return ""
+    start = max(1, start)
+    end = max(start, end)
+    return f"{start}-{end}"
+
+
+async def _build_splitbook_outline_reference(db: AsyncSession, *, splitbook_id: str) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    if not splitbook_id:
+        return out
+    sb = await get_splitbook(db, splitbook_id)
+    if sb:
+        out["splitbook_id"] = str(sb.get("splitbook_id") or splitbook_id)
+        out["splitbook_name"] = str(sb.get("name") or "").strip()
+    try:
+        outline = await build_splitbook_outline(db, splitbook_id)
+    except Exception:
+        return out
+    chapters = outline.get("chapters") if isinstance(outline, dict) else []
+    if not isinstance(chapters, list) or not chapters:
+        return out
+    chapter_total = int(outline.get("chapter_total") or len(chapters) or 0)
+    chapter_total = max(1, chapter_total)
+    out["chapter_total"] = chapter_total
+
+    phase_names = ["起势", "升级", "爆发", "回收"]
+    phase_skeleton: list[dict[str, str]] = []
+    for idx, name in enumerate(phase_names):
+        start = int((chapter_total * idx) / len(phase_names)) + 1
+        end = int((chapter_total * (idx + 1)) / len(phase_names))
+        phase_skeleton.append(
+            {
+                "name": name,
+                "chapter_range": _slice_chapter_range(chapters, start, end),
+                "goal": ["建立主线目标与关键矛盾", "抬升冲突与代价压力", "多线爆发并兑现关键爽点", "收束阶段承诺并引出下阶段问题"][idx],
+            }
+        )
+    out["phase_skeleton"] = phase_skeleton
+
+    samples: list[dict[str, Any]] = []
+    foreshadow_total = 0
+    payoff_total = 0
+    for ch in chapters[:24]:
+        if not isinstance(ch, dict):
+            continue
+        summary = ch.get("summary") if isinstance(ch.get("summary"), dict) else {}
+        foreshadow_count = int(summary.get("foreshadow_count") or 0)
+        payoff_count = int(summary.get("payoff_count") or 0)
+        foreshadow_total += foreshadow_count
+        payoff_total += payoff_count
+        samples.append(
+            {
+                "chapter_no": int(ch.get("chapter_no") or 0),
+                "chapter_title": str(ch.get("chapter_title") or "")[:80],
+                "conflict": str(summary.get("conflict") or "")[:120],
+                "foreshadow_count": foreshadow_count,
+                "payoff_count": payoff_count,
+            }
+        )
+    out["chapter_pattern_samples"] = samples
+    out["rhythm"] = {
+        "foreshadow_total": foreshadow_total,
+        "payoff_total": payoff_total,
+        "foreshadow_payoff_ratio": round(foreshadow_total / max(1, payoff_total), 3),
+    }
+    return out
+
+
+def _derive_outline_axes(*texts: str) -> list[str]:
+    merged = " ".join([_normalize_brief_typos(str(x or "")) for x in texts]).lower()
+    rules: list[tuple[list[str], str]] = [
+        (["生存", "求生", "绝境"], "生存压力"),
+        (["群像", "团队", "同伴"], "群像协同"),
+        (["杀伐", "果断", "铁血"], "强决策推进"),
+        (["升级", "进阶", "成长"], "阶段升级"),
+        (["规则", "禁忌", "体系"], "规则对抗"),
+        (["阴谋", "外神", "魔物", "敌对势力"], "高压对抗"),
+        (["伏笔", "回收", "反转"], "伏笔回收"),
+        (["代价", "牺牲", "痛点"], "代价驱动"),
+    ]
+    tags: list[str] = []
+    for keys, label in rules:
+        if any(k in merged for k in keys) and label not in tags:
+            tags.append(label)
+    if not tags:
+        tags = ["目标推进", "冲突升级", "代价兑现"]
+    return tags[:5]
+
+
+def _normalize_copycheck_text(text: str) -> str:
+    s = str(text or "").lower()
+    s = re.sub(r"[\s\u3000]+", "", s)
+    s = re.sub(r"[^\w\u4e00-\u9fff]", "", s)
+    return s
+
+
+def _char_ngrams(text: str, n: int = 3) -> set[str]:
+    if not text or len(text) < n:
+        return set()
+    return {text[i : i + n] for i in range(0, len(text) - n + 1)}
+
+
+def _is_copy_like_text(text: str, source_lines: list[str]) -> bool:
+    target = _normalize_copycheck_text(text)
+    if len(target) < 8:
+        return False
+    target_grams = _char_ngrams(target, 3)
+    for line in source_lines:
+        source = _normalize_copycheck_text(line)
+        if len(source) < 8:
+            continue
+        if source in target:
+            return True
+        source_grams = _char_ngrams(source, 3)
+        if not source_grams or not target_grams:
+            continue
+        overlap = len(target_grams & source_grams)
+        ratio = overlap / max(1, len(source_grams))
+        if overlap >= 5 and ratio >= 0.62:
+            return True
+    return False
+
+
+def _collect_hint_lines(hints: dict[str, Any]) -> list[str]:
+    lines: list[str] = []
+    for key in ("conflicts", "foreshadows", "payoffs", "growths", "strategies"):
+        vals = hints.get(key) if isinstance(hints.get(key), list) else []
+        for v in vals:
+            t = str(v or "").strip()
+            if t and t not in lines:
+                lines.append(t)
+    return lines[:80]
+
+
+def _detect_tags(lines: list[str], mapping: list[tuple[str, list[str]]], default_tag: str) -> list[str]:
+    tags: list[str] = []
+    for line in lines:
+        txt = str(line or "")
+        for tag, words in mapping:
+            if any(w in txt for w in words):
+                if tag not in tags:
+                    tags.append(tag)
+                break
+    if not tags:
+        tags.append(default_tag)
+    return tags[:4]
+
+
+def _outline_safe_structure_hints(hints: dict[str, Any]) -> dict[str, Any]:
+    conflicts = [str(x) for x in (hints.get("conflicts") or []) if str(x).strip()][:16]
+    foreshadows = [str(x) for x in (hints.get("foreshadows") or []) if str(x).strip()][:16]
+    payoffs = [str(x) for x in (hints.get("payoffs") or []) if str(x).strip()][:16]
+    growths = [str(x) for x in (hints.get("growths") or []) if str(x).strip()][:16]
+    strategies = [str(x) for x in (hints.get("strategies") or []) if str(x).strip()][:16]
+    conflict_tags = _detect_tags(
+        conflicts,
+        [
+            ("生存压力冲突", ["生存", "求生", "绝境", "危机"]),
+            ("资源争夺冲突", ["资源", "争夺", "利益", "筹码"]),
+            ("身份与立场冲突", ["身份", "阵营", "立场", "背叛", "隐瞒"]),
+            ("规则对抗冲突", ["规则", "禁令", "秩序", "契约", "制度"]),
+            ("战力压制冲突", ["压制", "逆袭", "越级", "战力", "碾压"]),
+        ],
+        "复合冲突",
+    )
+    foreshadow_tags = _detect_tags(
+        foreshadows,
+        [
+            ("身份伏笔", ["身份", "血脉", "来历", "真实身份"]),
+            ("规则伏笔", ["规则", "禁忌", "代价", "限制"]),
+            ("关系伏笔", ["关系", "师徒", "盟友", "情感"]),
+            ("事件伏笔", ["事件", "线索", "真相", "阴谋"]),
+        ],
+        "剧情伏笔",
+    )
+    payoff_tags = _detect_tags(
+        payoffs,
+        [
+            ("反转回收", ["反转", "真相", "揭露"]),
+            ("战斗回收", ["战斗", "对决", "镇压", "击败"]),
+            ("关系回收", ["和解", "决裂", "联盟", "背叛"]),
+            ("成长回收", ["成长", "突破", "觉醒", "代价"]),
+        ],
+        "阶段回收",
+    )
+    growth_tags = _detect_tags(
+        growths,
+        [
+            ("代价驱动成长", ["代价", "牺牲", "痛点", "负担"]),
+            ("压力驱动成长", ["压力", "逼迫", "危机", "困境"]),
+            ("关系驱动成长", ["关系", "同伴", "亲人", "羁绊"]),
+            ("目标驱动成长", ["目标", "使命", "信念", "选择"]),
+        ],
+        "冲突驱动成长",
+    )
+    strategy_tags = _detect_tags(
+        strategies,
+        [
+            ("铺垫-爆发-余震", ["铺垫", "爆发", "余震"]),
+            ("多线并进", ["多线", "并线", "线索并行"]),
+            ("阶段升级", ["升级", "阶段", "递进"]),
+            ("短回收高频", ["短回收", "高频", "节奏"]),
+        ],
+        "结构节奏优化",
+    )
+    return {
+        "sources": [str(x) for x in (hints.get("sources") or []) if str(x).strip()][:8],
+        "counts": {
+            "conflicts": len(conflicts),
+            "foreshadows": len(foreshadows),
+            "payoffs": len(payoffs),
+            "growths": len(growths),
+            "strategies": len(strategies),
+            "total_lines": int(hints.get("total_lines") or 0),
+        },
+        "tags": {
+            "conflicts": conflict_tags,
+            "foreshadows": foreshadow_tags,
+            "payoffs": payoff_tags,
+            "growths": growth_tags,
+            "strategies": strategy_tags,
+        },
+        "policy": {
+            "abstract_only": True,
+            "quote_source_text": False,
+            "forbidden": ["不得复述来源文本", "不得沿用来源句式", "不得复制原书金句"],
+        },
+    }
+
+
+def _fallback_outline_texts(*, theme: str, audience: str, setting_text: str, idea: str) -> dict[str, str]:
+    axes = _derive_outline_axes(theme, setting_text, idea)
+    audience_txt = _normalize_brief_typos(str(audience or "").strip()) or "网文读者"
+    theme_txt = " / ".join(axes[:2]) if axes else "成长与代价"
+    axis_text = " / ".join(axes[:3]) if axes else "目标推进 / 冲突升级 / 代价兑现"
+    return {
+        "summary": f"以“{axis_text}”为全书结构主轴，分阶段抬升冲突强度并稳定安排爽点与回收。",
+        "premise": "主角围绕长期目标持续推进，在外部高压对抗与内部价值选择中完成阶段突破与关系重排。",
+        "core_conflict": "主角的阶段目标与世界规则/阵营利益持续冲突，每次破局都伴随可见代价并触发更高层对抗。",
+        "theme": theme_txt,
+        "audience": audience_txt,
+    }
+
+
+def _apply_master_outline_anti_copy_guard(
+    outline: dict[str, Any],
+    *,
+    source_hint_lines: list[str],
+    theme: str,
+    audience: str,
+    setting_text: str,
+    idea: str,
+) -> tuple[dict[str, Any], list[str]]:
+    if not isinstance(outline, dict):
+        return outline, []
+    safe = dict(outline)
+    fallback = _fallback_outline_texts(theme=theme, audience=audience, setting_text=setting_text, idea=idea)
+    rewritten_fields: list[str] = []
+    for key in ("summary", "premise", "core_conflict", "theme"):
+        text_value = str(safe.get(key) or "").strip()
+        if not text_value or _is_copy_like_text(text_value, source_hint_lines):
+            safe[key] = fallback[key]
+            rewritten_fields.append(key)
+    phases = safe.get("phases") if isinstance(safe.get("phases"), list) else []
+    normalized_phases: list[dict[str, str]] = []
+    for idx, ph in enumerate(phases):
+        if not isinstance(ph, dict):
+            continue
+        name = str(ph.get("name") or "").strip() or f"第{idx + 1}阶段"
+        goal = str(ph.get("goal") or "").strip()
+        chapter_range = str(ph.get("chapter_range") or "").strip()
+        if not goal or _is_copy_like_text(goal, source_hint_lines):
+            goal = f"第{idx + 1}阶段围绕主线目标推进，升级冲突与代价，并完成阶段性回收。"
+            rewritten_fields.append(f"phases[{idx}].goal")
+        normalized_phases.append({"name": name[:80], "goal": goal[:220], "chapter_range": chapter_range[:40]})
+    if normalized_phases:
+        safe["phases"] = normalized_phases
+    constraints = safe.get("constraints") if isinstance(safe.get("constraints"), dict) else {}
+    constraints = {**constraints}
+    constraints["anti_copy"] = "仅可借结构，不可复述来源文本"
+    if rewritten_fields:
+        constraints["anti_copy_guard"] = "triggered"
+    safe["constraints"] = constraints
+    return safe, sorted(set(rewritten_fields))
+
+
+def _enrich_master_outline_summary(outline: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(outline, dict):
+        return outline
+    out = dict(outline)
+    summary = str(out.get("summary") or "").strip()
+    if len(summary) >= 80:
+        return out
+    premise = str(out.get("premise") or "").strip()
+    core_conflict = str(out.get("core_conflict") or "").strip()
+    phases = out.get("phases") if isinstance(out.get("phases"), list) else []
+    phase_lines: list[str] = []
+    for item in phases[:4]:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        goal = str(item.get("goal") or "").strip()
+        if not (name or goal):
+            continue
+        if goal:
+            phase_lines.append(f"{name}:{goal}" if name else goal)
+    phase_text = "；".join(phase_lines)
+    merged = "。".join([x for x in [premise, f"核心冲突：{core_conflict}" if core_conflict else "", f"阶段推进：{phase_text}" if phase_text else ""] if x]).strip("。")
+    if merged:
+        out["summary"] = (merged + "。")[:1200]
+    return out
+
+
+def _validate_chapter_outline_ai_json(value: dict[str, Any] | list[Any]) -> None:
+    if not isinstance(value, dict):
+        raise ValueError("must be object")
+    nodes = value.get("nodes")
+    if not isinstance(nodes, list):
+        raise ValueError("nodes must be array")
+
+
+def _normalize_chapter_outline_ai_json(value: dict[str, Any], *, chapter_title: str) -> dict[str, Any]:
+    node_types = ["setup", "conflict", "turn", "hook"]
+    nodes_in = value.get("nodes") if isinstance(value.get("nodes"), list) else []
+    nodes: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for idx, raw in enumerate(nodes_in[:10]):
+        if not isinstance(raw, dict):
+            continue
+        ntype = str(raw.get("type") or "").strip().lower()
+        if ntype not in {"setup", "conflict", "turn", "hook", "payoff", "reveal"}:
+            ntype = node_types[min(idx, len(node_types) - 1)]
+        summary = str(raw.get("summary") or "").strip()
+        if not summary:
+            continue
+        node_id = str(raw.get("node_id") or f"beat-{ntype}-{idx + 1}").strip()[:64]
+        if node_id in seen:
+            node_id = f"{node_id}-{idx + 1}"
+        seen.add(node_id)
+        nodes.append({"node_id": node_id, "type": ntype, "summary": summary[:320]})
+    if len(nodes) < 4:
+        defaults = [
+            ("setup", "开场明确本章目标与阻力，承接总纲与卷纲推进。"),
+            ("conflict", "本章核心冲突升级，形成可见压力与代价。"),
+            ("turn", "关键决策触发局势转折，人物关系或目标发生变化。"),
+            ("hook", "章末留出悬念与下一章驱动力，保持节奏连续。"),
+        ]
+        for idx, (ntype, summary) in enumerate(defaults):
+            if len(nodes) >= 4:
+                break
+            nodes.append({"node_id": f"beat-{ntype}-{idx+1}", "type": ntype, "summary": summary})
+    return {
+        "chapter_title": str(value.get("chapter_title") or chapter_title or "").strip()[:120] or chapter_title or "章节",
+        "nodes": nodes[:8],
+    }
+
+
+def _validate_master_outline_ai_json(value: dict[str, Any] | list[Any]) -> None:
+    if not isinstance(value, dict):
+        raise ValueError("must be object")
+    required = ("summary", "premise", "core_conflict", "theme", "audience", "planned_chapters", "phases")
+    for key in required:
+        if key not in value:
+            raise ValueError(f"missing field: {key}")
+    if not isinstance(value.get("phases"), list):
+        raise ValueError("phases must be array")
+
+
+def _normalize_master_outline_ai_json(value: dict[str, Any], *, fallback_planned: int, hint_count: int) -> dict[str, Any]:
+    planned_raw = value.get("planned_chapters")
+    try:
+        planned = int(planned_raw)
+    except Exception:
+        planned = int(fallback_planned)
+    planned = max(1, min(9999, planned))
+
+    phases_in = value.get("phases") if isinstance(value.get("phases"), list) else []
+    phases: list[dict[str, str]] = []
+    for item in phases_in[:20]:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()[:80]
+        goal = str(item.get("goal") or "").strip()[:220]
+        chapter_range = str(item.get("chapter_range") or "").strip()[:40]
+        if not name and not goal:
+            continue
+        phases.append({"name": name or "阶段", "goal": goal, "chapter_range": chapter_range})
+    constraints_in = value.get("constraints") if isinstance(value.get("constraints"), dict) else {}
+    constraints = {
+        "anti_copy": str(constraints_in.get("anti_copy") or "仅可借结构，不可复述来源文本").strip()[:120],
+        "continuity": str(constraints_in.get("continuity") or "生成章节需保持总纲→卷纲→章纲一致").strip()[:120],
+    }
+    return {
+        "schema": "writing_master_outline_v1",
+        "summary": str(value.get("summary") or "").strip()[:1200],
+        "planned_chapters": planned,
+        "premise": str(value.get("premise") or "").strip()[:1200],
+        "core_conflict": str(value.get("core_conflict") or "").strip()[:1200],
+        "theme": str(value.get("theme") or "").strip()[:300],
+        "audience": str(value.get("audience") or "").strip()[:300],
+        "phases": phases,
+        "constraints": constraints,
+        "splitbook_hints_count": max(0, int(hint_count or 0)),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+async def _merge_splitbook_hints(
+    db: AsyncSession,
+    *,
+    splitbook_id: str,
+    hints: dict[str, Any],
+) -> dict[str, Any]:
+    out = {
+        "sources": [str(x) for x in (hints.get("sources") or []) if str(x).strip()][:8],
+        "conflicts": [str(x) for x in (hints.get("conflicts") or []) if str(x).strip()][:8],
+        "foreshadows": [str(x) for x in (hints.get("foreshadows") or []) if str(x).strip()][:8],
+        "payoffs": [str(x) for x in (hints.get("payoffs") or []) if str(x).strip()][:8],
+        "growths": [str(x) for x in (hints.get("growths") or []) if str(x).strip()][:8],
+        "strategies": [str(x) for x in (hints.get("strategies") or []) if str(x).strip()][:8],
+    }
+    sb = await get_splitbook(db, splitbook_id)
+    if not sb:
+        out["total_lines"] = sum(len(out[k]) for k in ("conflicts", "foreshadows", "payoffs", "growths", "strategies"))
+        return out
+    sb_name = str(sb.get("name") or "").strip()
+    if sb_name and sb_name not in out["sources"]:
+        out["sources"].append(sb_name)
+    try:
+        outline = await build_splitbook_outline(db, splitbook_id)
+        chapters = outline.get("chapters") if isinstance(outline, dict) else []
+        if isinstance(chapters, list):
+            for ch in chapters[:24]:
+                if not isinstance(ch, dict):
+                    continue
+                summary = ch.get("summary") if isinstance(ch.get("summary"), dict) else {}
+                c = str(summary.get("conflict") or "").strip()
+                if c and c not in out["conflicts"] and len(out["conflicts"]) < 8:
+                    out["conflicts"].append(c)
+                beats = ch.get("beats") if isinstance(ch.get("beats"), dict) else {}
+                for line in [str(x).strip() for x in (beats.get("foreshadow") or []) if str(x).strip()]:
+                    if line not in out["foreshadows"] and len(out["foreshadows"]) < 8:
+                        out["foreshadows"].append(line)
+                for line in [str(x).strip() for x in (beats.get("payoff") or []) if str(x).strip()]:
+                    if line not in out["payoffs"] and len(out["payoffs"]) < 8:
+                        out["payoffs"].append(line)
+    except Exception:
+        pass
+    try:
+        ledger = await get_splitbook_ledger_view(db, splitbook_id, view="chapter", limit=200)
+        rows = ledger.get("rows") if isinstance(ledger, dict) else []
+        if isinstance(rows, list):
+            for row in rows[:40]:
+                if not isinstance(row, dict):
+                    continue
+                who = str(row.get("character_name") or row.get("name") or "").strip()
+                stage = str(row.get("growth_stage") or row.get("latest_stage") or "").strip()
+                pressure = str(row.get("pressure") or row.get("latest_pressure") or "").strip()
+                cost = str(row.get("cost") or row.get("latest_cost") or "").strip()
+                gain = str(row.get("gain") or row.get("latest_gain") or "").strip()
+                if not who:
+                    continue
+                line = f"{who}: 阶段={stage or '待补充'}；压力={pressure or '待补充'}；代价={cost or '待补充'}；收获={gain or '待补充'}"
+                if line not in out["growths"] and len(out["growths"]) < 8:
+                    out["growths"].append(line)
+    except Exception:
+        pass
+    if out["sources"]:
+        strategy_line = f"优先复用拆书结构节奏（来源：{' / '.join(out['sources'][:3])}），禁止复述原文。"
+        if strategy_line not in out["strategies"] and len(out["strategies"]) < 8:
+            out["strategies"].append(strategy_line)
+    out["total_lines"] = sum(len(out[k]) for k in ("conflicts", "foreshadows", "payoffs", "growths", "strategies"))
+    return out
+
+
+def _apply_structure_hints_to_volume_draft(draft: dict, hints: dict[str, Any]) -> dict:
+    if not isinstance(draft, dict):
+        return draft
+    total_lines = int(hints.get("total_lines") or 0)
+    if total_lines <= 0:
+        return draft
+    assumptions = draft.get("assumptions") if isinstance(draft.get("assumptions"), dict) else {}
+    items = draft.get("items") if isinstance(draft.get("items"), list) else []
+    assumptions = {**assumptions}
+    assumptions["external_structure_hints"] = {
+        "sources": [str(x) for x in (hints.get("sources") or []) if str(x).strip()][:8],
+        "total_lines": total_lines,
+        "counts": {
+            "conflicts": len(hints.get("conflicts") or []),
+            "foreshadows": len(hints.get("foreshadows") or []),
+            "payoffs": len(hints.get("payoffs") or []),
+            "growths": len(hints.get("growths") or []),
+            "strategies": len(hints.get("strategies") or []),
+        },
+    }
+
+    def _append_hint(kind: str, lines: list[str], window: str, priority: int, max_append: int = 2) -> None:
+        if not lines:
+            return
+        added = 0
+        for line in lines:
+            txt = str(line or "").strip()
+            if not txt:
+                continue
+            if any(txt in str(it.get("summary") or "") for it in items):
+                continue
+            items.append(
+                {
+                    "kind": kind,
+                    "ref_id": "",
+                    "summary": f"融合拆书结构：{txt}",
+                    "target_window": window,
+                    "target_p_vol_min": 0.2 if window == "vol_setup" else 0.55 if window == "vol_build" else 0.78,
+                    "target_p_vol_max": 0.5 if window == "vol_setup" else 0.82 if window == "vol_build" else 0.98,
+                    "priority": int(priority),
+                    "must_happen": False,
+                    "meta": {
+                        "external_structure_hint": True,
+                        "hint_kind": kind,
+                        "source_splitbooks": assumptions["external_structure_hints"]["sources"],
+                    },
+                }
+            )
+            added += 1
+            if added >= max_append:
+                break
+
+    _append_hint("conflict", list(hints.get("conflicts") or []), "vol_build", 4, 2)
+    _append_hint("foreshadow_seed", list(hints.get("foreshadows") or []), "vol_setup", 3, 2)
+    _append_hint("foreshadow_payoff", list(hints.get("payoffs") or []), "vol_spike", 4, 2)
+    _append_hint("growth", list(hints.get("growths") or []), "vol_build", 4, 2)
+    _append_hint("combo", list(hints.get("strategies") or []), "vol_release", 3, 1)
+    return {"assumptions": assumptions, "items": items}
+
+
+def _validate_volume_plan_refine_output(value: dict[str, Any] | list[Any]) -> None:
+    if not isinstance(value, dict):
+        raise ValueError("must be object")
+    items = value.get("items")
+    if not isinstance(items, list):
+        raise ValueError("items must be array")
+
+
+def _normalize_volume_plan_refine_output(value: dict[str, Any], *, limit: int) -> list[dict[str, Any]]:
+    rows = value.get("items") if isinstance(value.get("items"), list) else []
+    out: list[dict[str, Any]] = []
+    for row in rows[: max(1, min(40, limit))]:
+        if not isinstance(row, dict):
+            continue
+        try:
+            index = int(row.get("index"))
+        except Exception:
+            continue
+        summary = str(row.get("summary") or "").strip()
+        if index < 0 or not summary:
+            continue
+        out.append({"index": index, "summary": summary[:320]})
+    return out
+
+
+async def _refine_volume_plan_with_ai(
+    *,
+    draft: dict[str, Any],
+    volume_goal: str,
+    volume_theme: str,
+    target_pacing: str,
+    structure_hints: dict[str, Any],
+    splitbook_outline_reference: dict[str, Any],
+    strict: bool = False,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    if not isinstance(draft, dict):
+        if strict:
+            raise RuntimeError("VOLUME_PLAN_AI_UNAVAILABLE:draft_invalid")
+        return draft, {"applied": False, "reason": "draft_invalid"}
+    items = draft.get("items") if isinstance(draft.get("items"), list) else []
+    if not items:
+        if strict:
+            raise RuntimeError("VOLUME_PLAN_AI_UNAVAILABLE:items_empty")
+        return draft, {"applied": False, "reason": "items_empty"}
+
+    sample_items: list[dict[str, Any]] = []
+    for idx, it in enumerate(items[:12]):
+        if not isinstance(it, dict):
+            continue
+        sample_items.append(
+            {
+                "index": idx,
+                "kind": str(it.get("kind") or ""),
+                "target_window": str(it.get("target_window") or ""),
+                "priority": int(it.get("priority") or 3),
+                "must_happen": bool(it.get("must_happen", False)),
+                "summary": str(it.get("summary") or "")[:220],
+            }
+        )
+    if not sample_items:
+        if strict:
+            raise RuntimeError("VOLUME_PLAN_AI_UNAVAILABLE:sample_empty")
+        return draft, {"applied": False, "reason": "sample_empty"}
+
+    safe_hints = _outline_safe_structure_hints(structure_hints)
+    prompt_payload = {
+        "volume_goal": str(volume_goal or "").strip(),
+        "volume_theme": str(volume_theme or "").strip(),
+        "target_pacing": str(target_pacing or "mid").strip(),
+        "plan_items": sample_items,
+        "splitbook_outline_reference": splitbook_outline_reference if isinstance(splitbook_outline_reference, dict) else {},
+        "structure_hints": safe_hints,
+        "requirements": {
+            "language": "简体中文",
+            "rewrite_only_summary": True,
+            "keep_kind_window_priority": True,
+            "anti_copy": "仅可借结构节奏，禁止复述来源句子",
+        },
+    }
+    user_prompt = (
+        "请优化卷纲条目的 summary，使其更可执行、节奏更清晰。\n"
+        "规则：\n"
+        "1) 只可修改 summary；不得改变 index、kind、target_window、priority、must_happen。\n"
+        "2) summary 必须体现目标-阻力-推进/回收，不要空话。\n"
+        "3) 仅借鉴拆书结构，不可复述原文。\n"
+        "4) 仅输出 JSON。\n\n"
+        f"输入：{json.dumps(prompt_payload, ensure_ascii=False)}"
+    )
+    schema_hint = '{"items":[{"index":0,"summary":"string"}]}'
+    try:
+        client = OllamaClient(settings.ollama_host)
+        raw = await client.chat_json(
+            model=DEFAULT_LLM_MODEL,
+            user=user_prompt,
+            system="你是小说卷纲策划编辑。只输出合法 JSON。",
+            temperature=0.25,
+            max_tokens=1400,
+            timeout_s=120,
+            retries=1,
+            schema_hint=schema_hint,
+            validate=_validate_volume_plan_refine_output,
+            meta={"route": "volume_plan_refine", "item_count": len(sample_items)},
+        )
+    except Exception as exc:
+        if strict:
+            raise RuntimeError(f"VOLUME_PLAN_AI_UNAVAILABLE:llm_failed:{str(exc)[:120]}") from exc
+        return draft, {"applied": False, "reason": f"llm_failed:{str(exc)[:120]}"}
+
+    rewrites = _normalize_volume_plan_refine_output(raw if isinstance(raw, dict) else {}, limit=len(sample_items))
+    if not rewrites:
+        return draft, {"applied": False, "reason": "rewrite_empty"}
+    next_items = [dict(x) if isinstance(x, dict) else x for x in items]
+    changed = 0
+    for row in rewrites:
+        idx = int(row.get("index") or -1)
+        if idx < 0 or idx >= len(next_items):
+            continue
+        target = next_items[idx]
+        if not isinstance(target, dict):
+            continue
+        summary = str(row.get("summary") or "").strip()
+        if not summary:
+            continue
+        if summary != str(target.get("summary") or ""):
+            target["summary"] = summary
+            changed += 1
+    out = dict(draft)
+    out["items"] = next_items
+    assumptions = out.get("assumptions") if isinstance(out.get("assumptions"), dict) else {}
+    assumptions = dict(assumptions)
+    assumptions["ai_refine"] = {
+        "enabled": True,
+        "changed_items": changed,
+        "sample_size": len(sample_items),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    out["assumptions"] = assumptions
+    return out, {"applied": changed > 0, "changed_items": changed, "sample_size": len(sample_items)}
 
 
 async def _build_volume_plan_auto_draft(
@@ -1671,6 +3378,133 @@ async def volume_plan_versions_route(
     return {"book_id": str(book_id), "volume_id": str(volume_id), "items": [dict(r) for r in rows.mappings().all()]}
 
 
+@app.delete("/v1/books/{book_id}/volumes/{volume_id}/plan/{version}")
+async def volume_plan_delete_version_route(
+    book_id: UUID,
+    volume_id: UUID,
+    version: int,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    row_target = await db.execute(
+        text(
+            """
+            SELECT vol_plan_id::text AS vol_plan_id, version, status
+            FROM volume_plan
+            WHERE book_id=CAST(:book_id AS uuid)
+              AND volume_id=CAST(:volume_id AS uuid)
+              AND version=:version
+            LIMIT 1
+            """
+        ),
+        {"book_id": str(book_id), "volume_id": str(volume_id), "version": int(version)},
+    )
+    target = row_target.mappings().first()
+    if not target:
+        raise HTTPException(status_code=404, detail="VOLUME_PLAN_VERSION_NOT_FOUND")
+
+    row_count = await db.execute(
+        text(
+            """
+            SELECT COUNT(*)::int AS n
+            FROM volume_plan
+            WHERE book_id=CAST(:book_id AS uuid)
+              AND volume_id=CAST(:volume_id AS uuid)
+            """
+        ),
+        {"book_id": str(book_id), "volume_id": str(volume_id)},
+    )
+    total = int((row_count.mappings().first() or {}).get("n") or 0)
+    if total <= 1:
+        raise HTTPException(status_code=400, detail="VOLUME_PLAN_DELETE_LAST_FORBIDDEN")
+
+    deleted_version = int(target.get("version") or version)
+    deleted_status = str(target.get("status") or "")
+    replacement_version: int | None = None
+
+    if deleted_status == "active":
+        row_replacement = await db.execute(
+            text(
+                """
+                SELECT version
+                FROM volume_plan
+                WHERE book_id=CAST(:book_id AS uuid)
+                  AND volume_id=CAST(:volume_id AS uuid)
+                  AND version<>:version
+                ORDER BY version DESC
+                LIMIT 1
+                """
+            ),
+            {"book_id": str(book_id), "volume_id": str(volume_id), "version": deleted_version},
+        )
+        replacement = row_replacement.mappings().first()
+        replacement_version = int((replacement or {}).get("version") or 0) or None
+        if replacement_version is None:
+            raise HTTPException(status_code=400, detail="VOLUME_PLAN_DELETE_NO_REPLACEMENT")
+
+    await db.execute(
+        text(
+            """
+            DELETE FROM volume_plan
+            WHERE book_id=CAST(:book_id AS uuid)
+              AND volume_id=CAST(:volume_id AS uuid)
+              AND version=:version
+            """
+        ),
+        {"book_id": str(book_id), "volume_id": str(volume_id), "version": deleted_version},
+    )
+
+    if replacement_version is not None:
+        await db.execute(
+            text(
+                """
+                UPDATE volume_plan
+                SET status='archived'
+                WHERE book_id=CAST(:book_id AS uuid)
+                  AND volume_id=CAST(:volume_id AS uuid)
+                  AND status='active'
+                """
+            ),
+            {"book_id": str(book_id), "volume_id": str(volume_id)},
+        )
+        await db.execute(
+            text(
+                """
+                UPDATE volume_plan
+                SET status='active'
+                WHERE book_id=CAST(:book_id AS uuid)
+                  AND volume_id=CAST(:volume_id AS uuid)
+                  AND version=:version
+                """
+            ),
+            {"book_id": str(book_id), "volume_id": str(volume_id), "version": replacement_version},
+        )
+
+    cleanup_audit = await db.execute(
+        text(
+            """
+            DELETE FROM volume_plan_audit
+            WHERE book_id=CAST(:book_id AS uuid)
+              AND volume_id=CAST(:volume_id AS uuid)
+              AND (from_version=:version OR to_version=:version)
+            RETURNING audit_id
+            """
+        ),
+        {"book_id": str(book_id), "volume_id": str(volume_id), "version": deleted_version},
+    )
+    audit_deleted = len(cleanup_audit.fetchall())
+
+    await db.commit()
+    return {
+        "ok": True,
+        "book_id": str(book_id),
+        "volume_id": str(volume_id),
+        "deleted_version": deleted_version,
+        "deleted_status": deleted_status,
+        "replacement_version": replacement_version,
+        "audit_deleted": audit_deleted,
+    }
+
+
 @app.post("/v1/books/{book_id}/volumes/{volume_id}/plan/{version}/promote")
 async def volume_plan_promote_route(
     book_id: UUID,
@@ -1978,6 +3812,10 @@ async def volume_plan_preview_auto_route(book_id: UUID, volume_id: UUID, body: d
     volume_goal = str((body or {}).get("volume_goal") or (body or {}).get("goal") or "").strip()
     volume_theme = str((body or {}).get("volume_theme") or "").strip()
     target_pacing = str((body or {}).get("target_pacing") or "mid").strip().lower()
+    structure_hints = _normalize_structure_hints(body or {})
+    material_guidance = _extract_material_guidance_from_refs([str(x) for x in ((body or {}).get("material_refs") or [])][:30])
+    splitbook_id = _resolve_splitbook_id_from_body(body or {})
+    splitbook_outline_reference = await _build_splitbook_outline_reference(db, splitbook_id=splitbook_id) if splitbook_id else {}
     draft = await _build_volume_plan_auto_draft(
         db,
         book_id=str(book_id),
@@ -1987,6 +3825,22 @@ async def volume_plan_preview_auto_route(book_id: UUID, volume_id: UUID, body: d
         target_pacing=target_pacing,
         reason="preview_auto",
     )
+    draft = _apply_structure_hints_to_volume_draft(draft, structure_hints)
+    ai_meta = {"applied": False, "reason": "disabled"}
+    if not bool((body or {}).get("use_ai_refine", True)):
+        raise HTTPException(status_code=400, detail="VOLUME_PLAN_AI_REQUIRED")
+    try:
+        draft, ai_meta = await _refine_volume_plan_with_ai(
+            draft=draft,
+            volume_goal=volume_goal,
+            volume_theme=volume_theme,
+            target_pacing=target_pacing,
+            structure_hints=structure_hints,
+            splitbook_outline_reference=splitbook_outline_reference,
+            strict=True,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     return {
         "ok": True,
         "book_id": str(book_id),
@@ -1994,6 +3848,16 @@ async def volume_plan_preview_auto_route(book_id: UUID, volume_id: UUID, body: d
         "volume_goal": volume_goal,
         "volume_theme": volume_theme,
         "target_pacing": target_pacing,
+        "splitbook_id": splitbook_id or None,
+        "splitbook_outline_reference": {
+            "chapter_total": int(splitbook_outline_reference.get("chapter_total") or 0),
+            "phase_count": len(splitbook_outline_reference.get("phase_skeleton") or []),
+        }
+        if splitbook_outline_reference
+        else {},
+        "structure_hints_applied": int(structure_hints.get("total_lines") or 0),
+        "structure_hint_sources": [str(x) for x in (structure_hints.get("sources") or []) if str(x).strip()][:8],
+        "ai_refine": ai_meta,
         "plan": draft,
     }
 
@@ -2018,6 +3882,9 @@ async def volume_plan_apply_auto_route(book_id: UUID, volume_id: UUID, body: dic
     volume_goal = str((body or {}).get("volume_goal") or (body or {}).get("goal") or "").strip()
     volume_theme = str((body or {}).get("volume_theme") or "").strip()
     target_pacing = str((body or {}).get("target_pacing") or "mid").strip().lower()
+    structure_hints = _normalize_structure_hints(body or {})
+    splitbook_id = _resolve_splitbook_id_from_body(body or {})
+    splitbook_outline_reference = await _build_splitbook_outline_reference(db, splitbook_id=splitbook_id) if splitbook_id else {}
     reason = str((body or {}).get("reason") or "apply_auto")
     note = str((body or {}).get("note") or "auto_apply_volume_plan")
     preview_plan = (body or {}).get("plan")
@@ -2030,7 +3897,23 @@ async def volume_plan_apply_auto_route(book_id: UUID, volume_id: UUID, body: dic
         target_pacing=target_pacing,
         reason=reason,
     )
-    return await _create_volume_plan_auto(
+    draft_plan = _apply_structure_hints_to_volume_draft(draft_plan, structure_hints)
+    ai_meta = {"applied": False, "reason": "disabled"}
+    if not bool((body or {}).get("use_ai_refine", True)):
+        raise HTTPException(status_code=400, detail="VOLUME_PLAN_AI_REQUIRED")
+    try:
+        draft_plan, ai_meta = await _refine_volume_plan_with_ai(
+            draft=draft_plan,
+            volume_goal=volume_goal,
+            volume_theme=volume_theme,
+            target_pacing=target_pacing,
+            structure_hints=structure_hints,
+            splitbook_outline_reference=splitbook_outline_reference,
+            strict=True,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    out = await _create_volume_plan_auto(
         db,
         book_id=str(book_id),
         volume_row=dict(vol),
@@ -2041,6 +3924,15 @@ async def volume_plan_apply_auto_route(book_id: UUID, volume_id: UUID, body: dic
         target_pacing=target_pacing,
         draft_plan=draft_plan,
     )
+    out["structure_hints_applied"] = int(structure_hints.get("total_lines") or 0)
+    out["structure_hint_sources"] = [str(x) for x in (structure_hints.get("sources") or []) if str(x).strip()][:8]
+    out["splitbook_id"] = splitbook_id or None
+    out["splitbook_outline_reference"] = {
+        "chapter_total": int(splitbook_outline_reference.get("chapter_total") or 0),
+        "phase_count": len(splitbook_outline_reference.get("phase_skeleton") or []),
+    } if splitbook_outline_reference else {}
+    out["ai_refine"] = ai_meta
+    return out
 
 
 @app.post("/v1/books/{book_id}/volumes/{volume_id}/plan/items/{item_id}")
@@ -2233,7 +4125,38 @@ async def volume_plan_auto_generate_route(book_id: UUID, volume_id: UUID, body: 
     volume_goal = str((body or {}).get("volume_goal") or (body or {}).get("goal") or "").strip()
     volume_theme = str((body or {}).get("volume_theme") or "").strip()
     target_pacing = str((body or {}).get("target_pacing") or "mid").strip().lower()
-    return await _create_volume_plan_auto(
+    structure_hints = _normalize_structure_hints(body or {})
+    splitbook_id = _resolve_splitbook_id_from_body(body or {})
+    splitbook_outline_reference = await _build_splitbook_outline_reference(db, splitbook_id=splitbook_id) if splitbook_id else {}
+
+    # Backward-compatible endpoint, but generation path is now AI-required.
+    if not bool((body or {}).get("use_ai_refine", True)):
+        raise HTTPException(status_code=400, detail="VOLUME_PLAN_AI_REQUIRED")
+
+    draft_plan = await _build_volume_plan_auto_draft(
+        db,
+        book_id=str(book_id),
+        volume_row=dict(vol),
+        volume_goal=volume_goal,
+        volume_theme=volume_theme,
+        target_pacing=target_pacing,
+        reason=reason,
+    )
+    draft_plan = _apply_structure_hints_to_volume_draft(draft_plan, structure_hints)
+    try:
+        draft_plan, ai_meta = await _refine_volume_plan_with_ai(
+            draft=draft_plan,
+            volume_goal=volume_goal,
+            volume_theme=volume_theme,
+            target_pacing=target_pacing,
+            structure_hints=structure_hints,
+            splitbook_outline_reference=splitbook_outline_reference,
+            strict=True,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    out = await _create_volume_plan_auto(
         db,
         book_id=str(book_id),
         volume_row=dict(vol),
@@ -2242,7 +4165,17 @@ async def volume_plan_auto_generate_route(book_id: UUID, volume_id: UUID, body: 
         volume_goal=volume_goal,
         volume_theme=volume_theme,
         target_pacing=target_pacing,
+        draft_plan=draft_plan,
     )
+    out["structure_hints_applied"] = int(structure_hints.get("total_lines") or 0)
+    out["structure_hint_sources"] = [str(x) for x in (structure_hints.get("sources") or []) if str(x).strip()][:8]
+    out["splitbook_id"] = splitbook_id or None
+    out["splitbook_outline_reference"] = {
+        "chapter_total": int(splitbook_outline_reference.get("chapter_total") or 0),
+        "phase_count": len(splitbook_outline_reference.get("phase_skeleton") or []),
+    } if splitbook_outline_reference else {}
+    out["ai_refine"] = ai_meta
+    return out
 
 
 @app.post("/v1/plan/autobuild")
@@ -3180,6 +5113,145 @@ async def growth_board_route(book_id: UUID, chapter_id: UUID | None = None, db: 
     }
 
 
+@app.get("/v1/books/{book_id}/growth/curve")
+async def growth_curve_route(book_id: UUID, db: AsyncSession = Depends(get_db)) -> dict:
+    book_id_s = str(book_id)
+    ev_rows = await db.execute(
+        text(
+            """
+            SELECT
+              c."order" AS chapter_no,
+              e.value AS event_item
+            FROM chapter_events ce
+            JOIN chapter c ON c.chapter_id=ce.chapter_id
+            CROSS JOIN LATERAL jsonb_array_elements(COALESCE(ce.events->'growth_events', '[]'::jsonb)) e(value)
+            WHERE ce.book_id=CAST(:book_id AS uuid)
+            ORDER BY c."order" ASC
+            """
+        ),
+        {"book_id": book_id_s},
+    )
+    events = [dict(r) for r in ev_rows.mappings().all()]
+    milestone_ids = {
+        str(((r.get("event_item") or {}).get("milestone_id") or "")).strip()
+        for r in events
+        if isinstance(r.get("event_item"), dict)
+    }
+    milestone_ids = {x for x in milestone_ids if x}
+    milestone_map: dict[str, str] = {}
+    if milestone_ids:
+        ms_rows = await db.execute(
+            text(
+                """
+                SELECT milestone_id::text AS milestone_id, character_name
+                FROM growth_milestone
+                WHERE milestone_id = ANY(:ids)
+                """
+            ),
+            {"ids": list(milestone_ids)},
+        )
+        milestone_map = {str(r.get("milestone_id")): str(r.get("character_name") or "角色") for r in ms_rows.mappings().all()}
+
+    by_character: dict[str, dict[int, float]] = {}
+    by_character_actions: dict[str, dict[int, int]] = {}
+    for row in events:
+        chapter_no = int(row.get("chapter_no") or 0)
+        item = row.get("event_item") if isinstance(row.get("event_item"), dict) else {}
+        if chapter_no <= 0 or not item:
+            continue
+        milestone_id = str(item.get("milestone_id") or "").strip()
+        character_name = milestone_map.get(milestone_id) or "角色"
+        action = str(item.get("action") or "").strip().lower()
+        delta = 0.0
+        if action == "advance":
+            delta += 1.0
+        elif action == "achieve":
+            delta += 2.2
+        if bool(item.get("cost_shown")):
+            delta += 0.5
+        if bool(item.get("choice_explicit")):
+            delta += 0.3
+        if delta <= 0:
+            continue
+        by_character.setdefault(character_name, {})
+        by_character_actions.setdefault(character_name, {})
+        by_character[character_name][chapter_no] = float(by_character[character_name].get(chapter_no, 0.0)) + delta
+        by_character_actions[character_name][chapter_no] = int(by_character_actions[character_name].get(chapter_no, 0)) + 1
+
+    if not by_character:
+        ms_rows = await db.execute(
+            text(
+                """
+                SELECT character_name, milestone_no, planned_chapter_no, status
+                FROM growth_milestone
+                WHERE book_id=CAST(:book_id AS uuid)
+                ORDER BY character_name, milestone_no
+                """
+            ),
+            {"book_id": book_id_s},
+        )
+        for row in ms_rows.mappings().all():
+            character_name = str(row.get("character_name") or "角色")
+            chapter_no = int(row.get("planned_chapter_no") or 0)
+            status = str(row.get("status") or "").lower()
+            if chapter_no <= 0:
+                chapter_no = int(row.get("milestone_no") or 1) * 3
+            delta = 0.8
+            if status in {"achieved", "reflected"}:
+                delta = 2.0
+            elif status in {"in_progress", "seeded"}:
+                delta = 1.2
+            by_character.setdefault(character_name, {})
+            by_character_actions.setdefault(character_name, {})
+            by_character[character_name][chapter_no] = float(by_character[character_name].get(chapter_no, 0.0)) + delta
+            by_character_actions[character_name][chapter_no] = int(by_character_actions[character_name].get(chapter_no, 0)) + 1
+
+    characters_out: list[dict] = []
+    global_curve_raw: dict[int, float] = {}
+    for character_name, chapters in by_character.items():
+        chapter_nos = sorted(chapters.keys())
+        cumulative = 0.0
+        points: list[dict] = []
+        for ch_no in chapter_nos:
+            delta = round(float(chapters.get(ch_no) or 0.0), 4)
+            cumulative = round(cumulative + delta, 4)
+            points.append(
+                {
+                    "chapter_no": ch_no,
+                    "delta": delta,
+                    "cumulative": cumulative,
+                    "action_count": int(by_character_actions.get(character_name, {}).get(ch_no, 0)),
+                }
+            )
+            global_curve_raw[ch_no] = float(global_curve_raw.get(ch_no, 0.0)) + delta
+        characters_out.append(
+            {
+                "character_name": character_name,
+                "points": points,
+                "summary": {
+                    "event_points": len(points),
+                    "max_cumulative": round(max((float(x.get("cumulative") or 0.0) for x in points), default=0.0), 4),
+                    "last_cumulative": round(float(points[-1]["cumulative"]) if points else 0.0, 4),
+                },
+            }
+        )
+    characters_out.sort(key=lambda x: float(((x.get("summary") or {}).get("last_cumulative") or 0.0)), reverse=True)
+
+    global_points: list[dict] = []
+    global_cumulative = 0.0
+    for ch_no in sorted(global_curve_raw.keys()):
+        delta = round(float(global_curve_raw[ch_no]), 4)
+        global_cumulative = round(global_cumulative + delta, 4)
+        global_points.append({"chapter_no": ch_no, "delta": delta, "cumulative": global_cumulative})
+
+    return {
+        "book_id": book_id_s,
+        "characters": characters_out,
+        "global_curve": global_points,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 @app.post("/v1/growth/milestones/{milestone_id}/event")
 async def growth_milestone_event_route(milestone_id: UUID, body: dict, db: AsyncSession = Depends(get_db)) -> dict:
     action = str((body or {}).get("action") or "").strip().lower()
@@ -3489,6 +5561,14 @@ async def get_profile_route(profile_id: UUID, db: AsyncSession = Depends(get_db)
     if not row:
         raise HTTPException(status_code=404, detail="PROFILE_NOT_FOUND")
     return ProfileItem(**row)
+
+
+@app.delete("/v1/profiles/{profile_id}")
+async def delete_profile_route(profile_id: UUID, db: AsyncSession = Depends(get_db)) -> dict:
+    row = await delete_profile(db, str(profile_id))
+    if not row:
+        raise HTTPException(status_code=404, detail="PROFILE_NOT_FOUND")
+    return {"ok": True, "deleted": row}
 
 
 @app.post("/v1/profiles/{profile_id}", response_model=ProfileItem)
@@ -3804,13 +5884,375 @@ async def profile_learn_from_texts_route(
     }
 
 
+@app.post("/v1/books/{book_id}/style/evolve")
+async def evolve_book_style_route(
+    book_id: UUID,
+    body: StyleEvolutionRequest,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    try:
+        return await evolve_book_style(
+            db,
+            book_id=str(book_id),
+            profile_id=str(body.profile_id) if body.profile_id else None,
+            sample_limit=int(body.sample_limit),
+            min_sample_count=int(body.min_sample_count),
+            alpha=float(body.alpha),
+            force=bool(body.force),
+            sync_book_settings=bool(body.sync_book_settings),
+            note=body.note,
+        )
+    except RuntimeError as exc:
+        code = str(exc)
+        if code in ("BOOK_NOT_FOUND", "PROFILE_NOT_FOUND"):
+            raise HTTPException(status_code=404, detail=code) from exc
+        if code in ("PROFILE_UPDATE_FAILED",):
+            raise HTTPException(status_code=500, detail=code) from exc
+        raise HTTPException(status_code=400, detail=code) from exc
+
+
+@app.get("/v1/books/{book_id}/style/evolution/latest")
+async def latest_book_style_evolution_route(book_id: UUID, db: AsyncSession = Depends(get_db)) -> dict:
+    item = await get_latest_style_evolution(db, book_id=str(book_id))
+    return {"ok": True, "item": item}
+
+
+async def reconcile_splitbook_state(db: AsyncSession, splitbook_id: str | None = None) -> dict:
+    target_rows: list[dict] = []
+    if splitbook_id:
+        one = await get_splitbook(db, str(splitbook_id))
+        if one:
+            target_rows = [one]
+    else:
+        target_rows = await list_splitbooks(db, limit=500)
+
+    updated = 0
+
+    def _job_pct(job_row: dict) -> int:
+        progress_obj = job_row.get("progress") if isinstance(job_row.get("progress"), dict) else {}
+        pct_raw = progress_obj.get("pct")
+        if isinstance(pct_raw, (int, float)):
+            return int(max(0, min(100, round(float(pct_raw)))))
+        pv = float(job_row.get("progress_value") or 0)
+        return int(max(0, min(100, round(pv * 100))))
+
+    def _job_age_seconds(job_row: dict) -> int:
+        raw = str(job_row.get("updated_at") or "").strip()
+        if not raw:
+            return 10**9
+        try:
+            ts = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except Exception:
+            return 10**9
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return max(0, int((datetime.now(timezone.utc) - ts).total_seconds()))
+
+    for row in target_rows:
+        sid = str(row.get("splitbook_id") or "").strip()
+        if not sid:
+            continue
+        current_ingest = str(row.get("ingest_status") or "").strip().lower()
+        current_embed = str(row.get("embed_status") or "").strip().lower()
+        stats = dict(row.get("stats") or {})
+
+        count_res = await db.execute(
+            text(
+                """
+                SELECT
+                  (SELECT COUNT(*) FROM splitbook_chunk WHERE splitbook_id=CAST(:sid AS uuid)) AS chunks_total,
+                  (SELECT COUNT(*) FROM splitbook_chunk_embedding e
+                    JOIN splitbook_chunk c ON c.chunk_id=e.chunk_id
+                   WHERE c.splitbook_id=CAST(:sid AS uuid)) AS embedded_total
+                """
+            ),
+            {"sid": sid},
+        )
+        count_row = count_res.mappings().first() or {}
+        chunks_total = int(count_row.get("chunks_total") or 0)
+        embedded_total = int(count_row.get("embedded_total") or 0)
+        derived_pct = int(round((embedded_total / chunks_total) * 100)) if chunks_total > 0 else 0
+
+        job_rows = (
+            await db.execute(
+                text(
+                    """
+                    SELECT job_id::text AS job_id, capability_id, status, progress_value, progress, updated_at
+                    FROM jobs
+                    WHERE payload->>'splitbook_id' = :sid
+                      AND capability_id IN ('splitbook.ingest.v1', 'splitbook.embed.v1')
+                    ORDER BY updated_at DESC
+                    """
+                ),
+                {"sid": sid},
+            )
+        ).mappings().all()
+
+        latest_active: dict[str, dict] = {}
+        latest_terminal: dict[str, dict] = {}
+        for job in job_rows:
+            cap = str(job.get("capability_id") or "").strip()
+            status = str(job.get("status") or "").strip().lower()
+            if not cap:
+                continue
+            if status in {"queued", "running"} and cap not in latest_active:
+                latest_active[cap] = dict(job)
+            if status in {"succeeded", "failed", "canceled", "cancelled"} and cap not in latest_terminal:
+                latest_terminal[cap] = dict(job)
+
+        active_ingest = latest_active.get("splitbook.ingest.v1")
+        active_embed = latest_active.get("splitbook.embed.v1")
+        terminal_ingest = latest_terminal.get("splitbook.ingest.v1")
+        terminal_embed = latest_terminal.get("splitbook.embed.v1")
+
+        next_ingest = current_ingest
+        next_embed = current_embed
+
+        if active_ingest:
+            active_ingest_age = _job_age_seconds(active_ingest)
+            active_ingest_status = str(active_ingest.get("status") or "").lower()
+            ingest_done_conflict = current_ingest == "done"
+            ingest_stale_conflict = active_ingest_status == "queued" and active_ingest_age >= 900
+            if ingest_done_conflict or ingest_stale_conflict:
+                next_ingest = "done"
+            else:
+                next_ingest = str(active_ingest.get("status") or "queued").lower()
+        elif terminal_ingest:
+            t = str(terminal_ingest.get("status") or "").lower()
+            next_ingest = "done" if t == "succeeded" else t
+        elif current_ingest in {"running", "queued", "ingesting"}:
+            next_ingest = "pending"
+
+        dirty_embed = False
+        if active_embed:
+            active_embed_age = _job_age_seconds(active_embed)
+            active_embed_status = str(active_embed.get("status") or "").lower()
+            active_embed_pct = _job_pct(active_embed)
+            embed_done_conflict = current_embed == "done" or (chunks_total > 0 and embedded_total >= chunks_total)
+            embed_stale_conflict = (
+                (active_embed_status == "queued" and active_embed_age >= 1800)
+                or (active_embed_status == "running" and active_embed_age >= 7200 and active_embed_pct >= 99)
+            )
+            if embed_done_conflict or embed_stale_conflict:
+                next_embed = "done" if (chunks_total > 0 and embedded_total >= chunks_total) or current_embed == "done" else "pending"
+                stats.pop("active_embed_job_id", None)
+                stats.pop("active_embed_job_status", None)
+                stats["embed_progress_pct"] = 100 if next_embed == "done" else derived_pct
+                if next_embed == "done":
+                    stats.pop("recover_hint", None)
+                else:
+                    stats["recover_hint"] = "manual_resume_required"
+                    dirty_embed = True
+            else:
+                next_embed = str(active_embed.get("status") or "queued").lower()
+                stats["active_embed_job_id"] = str(active_embed.get("job_id") or "")
+                stats["active_embed_job_status"] = next_embed
+                stats["embed_progress_pct"] = _job_pct(active_embed)
+                stats.pop("recover_hint", None)
+        elif terminal_embed:
+            t = str(terminal_embed.get("status") or "").lower()
+            next_embed = "done" if t == "succeeded" else t
+            stats.pop("active_embed_job_id", None)
+            stats.pop("active_embed_job_status", None)
+            stats["embed_progress_pct"] = 100 if next_embed == "done" else derived_pct
+            stats.pop("recover_hint", None)
+        elif current_embed in {"running", "queued"}:
+            if chunks_total > 0 and embedded_total >= chunks_total:
+                next_embed = "done"
+                stats.pop("recover_hint", None)
+            else:
+                next_embed = "pending"
+                stats["recover_hint"] = "manual_resume_required"
+                dirty_embed = True
+            stats.pop("active_embed_job_id", None)
+            stats.pop("active_embed_job_status", None)
+            stats["embed_progress_pct"] = derived_pct
+        else:
+            stats.pop("active_embed_job_id", None)
+            stats.pop("active_embed_job_status", None)
+            if chunks_total > 0:
+                stats["embed_progress_pct"] = derived_pct
+            if next_embed != "pending":
+                stats.pop("recover_hint", None)
+
+        stats["chunks_total"] = chunks_total
+        stats["embedded_total"] = embedded_total
+        if dirty_embed and "recover_hint" not in stats:
+            stats["recover_hint"] = "manual_resume_required"
+
+        if next_ingest != current_ingest or next_embed != current_embed or stats != dict(row.get("stats") or {}):
+            await update_splitbook_status(
+                db,
+                sid,
+                ingest_status=next_ingest,
+                embed_status=next_embed,
+                stats=stats,
+            )
+            updated += 1
+
+    return {"checked": len(target_rows), "updated": updated}
+
+
 @app.get("/v1/splitbooks")
 async def list_splitbooks_route(
     limit: int = Query(default=100, ge=1, le=500),
+    sync: bool = Query(default=True),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
+    if sync:
+        await reconcile_splitbook_state(db)
     rows = await list_splitbooks(db, limit=limit)
     return {"items": rows}
+
+
+@app.get("/v1/splitbooks/compare")
+async def compare_splitbooks_route(
+    splitbook_ids: str | None = Query(default=None),
+    limit: int = Query(default=8, ge=2, le=20),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    raw_ids = [x.strip() for x in str(splitbook_ids or "").split(",") if x.strip()]
+    selected: list[dict] = []
+    if raw_ids:
+        rows = await db.execute(
+            text(
+                """
+                SELECT splitbook_id::text AS splitbook_id, name, author, ingest_status, embed_status, stats, created_at
+                FROM splitbook
+                WHERE splitbook_id = ANY(:ids)
+                ORDER BY created_at DESC
+                LIMIT :limit
+                """
+            ),
+            {"ids": raw_ids, "limit": max(2, min(int(limit), 20))},
+        )
+        selected = [dict(r) for r in rows.mappings().all()]
+    if not selected:
+        rows = await db.execute(
+            text(
+                """
+                SELECT splitbook_id::text AS splitbook_id, name, author, ingest_status, embed_status, stats, created_at
+                FROM splitbook
+                ORDER BY created_at DESC
+                LIMIT :limit
+                """
+            ),
+            {"limit": max(2, min(int(limit), 20))},
+        )
+        selected = [dict(r) for r in rows.mappings().all()]
+    if not selected:
+        return {"items": [], "pairwise": [], "baseline_splitbook_id": None}
+
+    def _cosine(a: list[float], b: list[float]) -> float:
+        if not a or not b:
+            return 0.0
+        dot = sum(float(x) * float(y) for x, y in zip(a, b))
+        na = math.sqrt(sum(float(x) * float(x) for x in a))
+        nb = math.sqrt(sum(float(y) * float(y) for y in b))
+        if na <= 0 or nb <= 0:
+            return 0.0
+        return dot / (na * nb)
+
+    items_out: list[dict] = []
+    for row in selected:
+        sid = str(row.get("splitbook_id") or "")
+        stats_obj = row.get("stats") if isinstance(row.get("stats"), dict) else {}
+        counts_row = await db.execute(
+            text(
+                """
+                SELECT
+                  (SELECT COUNT(*) FROM splitbook_chunk WHERE splitbook_id=CAST(:sid AS uuid)) AS chunk_total,
+                  (SELECT COUNT(*) FROM splitbook_fact WHERE splitbook_id=CAST(:sid AS uuid)) AS fact_total,
+                  (SELECT COUNT(*) FROM splitbook_growth_ledger WHERE splitbook_id=CAST(:sid AS uuid)) AS growth_total,
+                  (SELECT COUNT(DISTINCT character_name) FROM splitbook_growth_ledger WHERE splitbook_id=CAST(:sid AS uuid)) AS character_total
+                """
+            ),
+            {"sid": sid},
+        )
+        counts = counts_row.mappings().first() or {}
+        text_rows = await db.execute(
+            text(
+                """
+                SELECT text
+                FROM splitbook_chunk
+                WHERE splitbook_id=CAST(:sid AS uuid)
+                ORDER BY chunk_no
+                LIMIT 120
+                """
+            ),
+            {"sid": sid},
+        )
+        merged_text = "\n".join(str(r.get("text") or "") for r in text_rows.mappings().all())
+        style_metrics = _simple_style_metrics(merged_text)
+        merged_lower = str(merged_text or "")
+        token_base = max(1, len(merged_lower))
+        conflict_hits = sum(merged_lower.count(x) for x in ["冲突", "对抗", "危机", "威胁", "反击", "追杀"])
+        payoff_hits = sum(merged_lower.count(x) for x in ["回收", "揭晓", "答案", "反转", "应验", "兑现"])
+        pressure_hits = sum(merged_lower.count(x) for x in ["压力", "倒计时", "逼迫", "危急", "濒临"])
+        conflict_density = round((conflict_hits / token_base) * 10000, 3)
+        payoff_density = round((payoff_hits / token_base) * 10000, 3)
+        pressure_density = round((pressure_hits / token_base) * 10000, 3)
+        style_vector = [
+            round(min(1.0, float(style_metrics.get("sentence_avg_len") or 0.0) / 40.0), 6),
+            round(min(1.0, float(style_metrics.get("short_sentence_ratio") or 0.0)), 6),
+            round(min(1.0, float(style_metrics.get("dialog_ratio") or 0.0)), 6),
+            round(min(1.0, conflict_density / 12.0), 6),
+            round(min(1.0, payoff_density / 10.0), 6),
+            round(min(1.0, pressure_density / 10.0), 6),
+        ]
+        items_out.append(
+            {
+                "splitbook_id": sid,
+                "name": str(row.get("name") or ""),
+                "author": str(row.get("author") or ""),
+                "ingest_status": str(row.get("ingest_status") or ""),
+                "embed_status": str(row.get("embed_status") or ""),
+                "counts": {
+                    "chunks": int(counts.get("chunk_total") or stats_obj.get("chunks_total") or 0),
+                    "facts": int(counts.get("fact_total") or stats_obj.get("fact_total") or 0),
+                    "growth_rows": int(counts.get("growth_total") or stats_obj.get("growth_rows") or 0),
+                    "characters": int(counts.get("character_total") or stats_obj.get("character_total") or 0),
+                },
+                "style_metrics": style_metrics,
+                "structure_metrics": {
+                    "conflict_density_per_10k_chars": conflict_density,
+                    "payoff_density_per_10k_chars": payoff_density,
+                    "pressure_density_per_10k_chars": pressure_density,
+                },
+                "style_vector": style_vector,
+            }
+        )
+
+    baseline = items_out[0]
+    baseline_vec = list(baseline.get("style_vector") or [])
+    pairwise: list[dict] = []
+    for item in items_out[1:]:
+        vec = list(item.get("style_vector") or [])
+        bm = baseline.get("style_metrics") if isinstance(baseline.get("style_metrics"), dict) else {}
+        im = item.get("style_metrics") if isinstance(item.get("style_metrics"), dict) else {}
+        bs = baseline.get("structure_metrics") if isinstance(baseline.get("structure_metrics"), dict) else {}
+        is_ = item.get("structure_metrics") if isinstance(item.get("structure_metrics"), dict) else {}
+        pairwise.append(
+            {
+                "baseline_splitbook_id": str(baseline.get("splitbook_id") or ""),
+                "compare_splitbook_id": str(item.get("splitbook_id") or ""),
+                "similarity": round(_cosine(baseline_vec, vec), 4),
+                "deltas": {
+                    "sentence_avg_len": round(float(im.get("sentence_avg_len") or 0.0) - float(bm.get("sentence_avg_len") or 0.0), 4),
+                    "short_sentence_ratio": round(float(im.get("short_sentence_ratio") or 0.0) - float(bm.get("short_sentence_ratio") or 0.0), 4),
+                    "dialog_ratio": round(float(im.get("dialog_ratio") or 0.0) - float(bm.get("dialog_ratio") or 0.0), 4),
+                    "conflict_density_per_10k_chars": round(float(is_.get("conflict_density_per_10k_chars") or 0.0) - float(bs.get("conflict_density_per_10k_chars") or 0.0), 4),
+                    "payoff_density_per_10k_chars": round(float(is_.get("payoff_density_per_10k_chars") or 0.0) - float(bs.get("payoff_density_per_10k_chars") or 0.0), 4),
+                },
+            }
+        )
+
+    return {
+        "baseline_splitbook_id": str(baseline.get("splitbook_id") or ""),
+        "items": items_out,
+        "pairwise": pairwise,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 @app.post("/v1/splitbooks")
@@ -3823,6 +6265,45 @@ async def create_splitbook_route(body: SplitbookCreateRequest, db: AsyncSession 
         note=body.note,
     )
     return row
+
+
+@app.delete("/v1/splitbooks/{splitbook_id}")
+async def delete_splitbook_route(
+    splitbook_id: UUID,
+    purge_assets: bool = Query(default=False),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    sid = str(splitbook_id)
+    row = await get_splitbook(db, sid)
+    if not row:
+        raise HTTPException(status_code=404, detail="SPLITBOOK_NOT_FOUND")
+    running = (
+        await db.execute(
+            text(
+                """
+                SELECT job_id::text AS job_id
+                FROM jobs
+                WHERE status IN ('queued', 'running')
+                  AND payload->>'splitbook_id' = :sid
+                ORDER BY created_at DESC
+                LIMIT 1
+                """
+            ),
+            {"sid": sid},
+        )
+    ).mappings().first()
+    if running:
+        raise HTTPException(status_code=409, detail="SPLITBOOK_JOB_RUNNING")
+    deleted = await delete_splitbook(db, sid, purge_assets=bool(purge_assets))
+    if not deleted:
+        raise HTTPException(status_code=404, detail="SPLITBOOK_NOT_FOUND")
+    deleted_jobs = await delete_jobs_by_splitbook(db, sid, include_active=False)
+    return {
+        "ok": True,
+        "deleted": deleted,
+        "purge_assets": bool(purge_assets),
+        "deleted_job_records": int(deleted_jobs),
+    }
 
 
 @app.post("/v1/splitbooks/{splitbook_id}/allow_guard")
@@ -3856,8 +6337,10 @@ async def splitbook_ingest_route(
         "encoding": body.get("encoding") or ingest_cfg.get("encoding") or "utf-8",
         "chunk_size": int(body.get("chunk_size") or ingest_cfg.get("chunk_size") or 600),
         "overlap": int(body.get("overlap") or ingest_cfg.get("overlap") or 120),
+        "batch_insert": int(body.get("batch_insert") or ingest_cfg.get("batch_insert") or 300),
+        "auto_optimize": bool(body.get("auto_optimize", True)),
     }
-    await update_splitbook_status(db, str(splitbook_id), ingest_status="ingesting")
+    await update_splitbook_status(db, str(splitbook_id), ingest_status="queued")
     job = await create_job(db, "splitbook.ingest.v1", payload, req_id)
     await job_runner.enqueue(job["job_id"], req_id)
     return SubmitJobResponse(job_id=job["job_id"], status="queued", queued_at=job["created_at"], request_id=req_id)
@@ -3873,6 +6356,27 @@ async def splitbook_embed_route(
     row = await get_splitbook(db, str(splitbook_id))
     if not row:
         raise HTTPException(status_code=404, detail="SPLITBOOK_NOT_FOUND")
+    force_embed = bool(body.get("force") or False)
+    if str(row.get("embed_status") or "").strip().lower() == "done" and not force_embed:
+        raise HTTPException(status_code=409, detail="SPLITBOOK_EMBED_ALREADY_DONE")
+    running = (
+        await db.execute(
+            text(
+                """
+                SELECT job_id::text AS job_id
+                FROM jobs
+                WHERE capability_id='splitbook.embed.v1'
+                  AND status IN ('queued', 'running')
+                  AND payload->>'splitbook_id' = :sid
+                ORDER BY created_at DESC
+                LIMIT 1
+                """
+            ),
+            {"sid": str(splitbook_id)},
+        )
+    ).mappings().first()
+    if running:
+        raise HTTPException(status_code=409, detail="SPLITBOOK_JOB_RUNNING")
     global_settings = await get_global_settings_scoped(db)
     embed_cfg = (global_settings or {}).get("embedding") or {}
     req_id = request_id(request)
@@ -3880,8 +6384,12 @@ async def splitbook_embed_route(
         "splitbook_id": str(splitbook_id),
         "model": body.get("model") or embed_cfg.get("model") or settings.embedding_model,
         "batch": int(body.get("batch") or embed_cfg.get("batch") or 64),
+        "worker_count": int(body.get("worker_count") or embed_cfg.get("worker_count") or 2),
+        "force": force_embed,
+        "auto_optimize": bool(body.get("auto_optimize", True)),
+        "output_dir": str(body.get("output_dir") or "").strip() or None,
     }
-    await update_splitbook_status(db, str(splitbook_id), embed_status="running")
+    await update_splitbook_status(db, str(splitbook_id), embed_status="queued")
     job = await create_job(db, "splitbook.embed.v1", payload, req_id)
     await job_runner.enqueue(job["job_id"], req_id)
     return SubmitJobResponse(job_id=job["job_id"], status="queued", queued_at=job["created_at"], request_id=req_id)
@@ -3900,6 +6408,34 @@ async def splitbook_build_templates_route(
     req_id = request_id(request)
     payload = {"splitbook_id": str(splitbook_id), "mode": body.get("mode") or "merge"}
     job = await create_job(db, "splitbook.build_templates.v1", payload, req_id)
+    await job_runner.enqueue(job["job_id"], req_id)
+    return SubmitJobResponse(job_id=job["job_id"], status="queued", queued_at=job["created_at"], request_id=req_id)
+
+
+@app.post("/v1/splitbooks/{splitbook_id}/extract_structured", response_model=SubmitJobResponse, status_code=202)
+async def splitbook_extract_structured_route(
+    splitbook_id: UUID,
+    body: dict,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> SubmitJobResponse:
+    row = await get_splitbook(db, str(splitbook_id))
+    if not row:
+        raise HTTPException(status_code=404, detail="SPLITBOOK_NOT_FOUND")
+    req_id = request_id(request)
+    payload = {
+        "splitbook_id": str(splitbook_id),
+        "mode": body.get("mode") or "full",
+        "extract_provider": body.get("extract_provider") or body.get("provider"),
+        "extract_model": body.get("extract_model") or body.get("llm_model"),
+        "pipeline_mode": body.get("pipeline_mode"),
+        "use_scene_judge": body.get("use_scene_judge"),
+        "pair_judge_enabled": body.get("pair_judge_enabled"),
+        "subtask_retries": body.get("subtask_retries"),
+        "subtask_timeout_s": body.get("subtask_timeout_s"),
+        "subtask_tasks": body.get("subtask_tasks"),
+    }
+    job = await create_job(db, "splitbook.extract_structured.v1", payload, req_id)
     await job_runner.enqueue(job["job_id"], req_id)
     return SubmitJobResponse(job_id=job["job_id"], status="queued", queued_at=job["created_at"], request_id=req_id)
 
@@ -3923,6 +6459,212 @@ async def splitbook_build_profile_route(
     job = await create_job(db, "splitbook.build_profile.v1", payload, req_id)
     await job_runner.enqueue(job["job_id"], req_id)
     return SubmitJobResponse(job_id=job["job_id"], status="queued", queued_at=job["created_at"], request_id=req_id)
+
+
+@app.post("/v1/splitbooks/{splitbook_id}/writeback_preview_batch", response_model=SubmitJobResponse, status_code=202)
+async def splitbook_writeback_preview_batch_route(
+    splitbook_id: UUID,
+    body: dict,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> SubmitJobResponse:
+    row = await get_splitbook(db, str(splitbook_id))
+    if not row:
+        raise HTTPException(status_code=404, detail="SPLITBOOK_NOT_FOUND")
+    running = (
+        await db.execute(
+            text(
+                """
+                SELECT job_id::text AS job_id
+                FROM jobs
+                WHERE capability_id='splitbook.writeback_batch.v1'
+                  AND status IN ('queued', 'running')
+                  AND payload->>'splitbook_id' = :sid
+                ORDER BY created_at DESC
+                LIMIT 1
+                """
+            ),
+            {"sid": str(splitbook_id)},
+        )
+    ).mappings().first()
+    if running:
+        raise HTTPException(status_code=409, detail="SPLITBOOK_JOB_RUNNING")
+    req_id = request_id(request)
+    payload = {
+        "splitbook_id": str(splitbook_id),
+        "mode": "preview",
+        "chapter_nos": body.get("chapter_nos"),
+        "max_chapters": body.get("max_chapters"),
+        "force": body.get("force"),
+    }
+    job = await create_job(db, "splitbook.writeback_batch.v1", payload, req_id)
+    await job_runner.enqueue(job["job_id"], req_id)
+    return SubmitJobResponse(job_id=job["job_id"], status="queued", queued_at=job["created_at"], request_id=req_id)
+
+
+@app.post("/v1/splitbooks/{splitbook_id}/writeback_confirm_batch", response_model=SubmitJobResponse, status_code=202)
+async def splitbook_writeback_confirm_batch_route(
+    splitbook_id: UUID,
+    body: dict,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> SubmitJobResponse:
+    row = await get_splitbook(db, str(splitbook_id))
+    if not row:
+        raise HTTPException(status_code=404, detail="SPLITBOOK_NOT_FOUND")
+    running = (
+        await db.execute(
+            text(
+                """
+                SELECT job_id::text AS job_id
+                FROM jobs
+                WHERE capability_id='splitbook.writeback_batch.v1'
+                  AND status IN ('queued', 'running')
+                  AND payload->>'splitbook_id' = :sid
+                ORDER BY created_at DESC
+                LIMIT 1
+                """
+            ),
+            {"sid": str(splitbook_id)},
+        )
+    ).mappings().first()
+    if running:
+        raise HTTPException(status_code=409, detail="SPLITBOOK_JOB_RUNNING")
+    req_id = request_id(request)
+    payload = {
+        "splitbook_id": str(splitbook_id),
+        "mode": "confirm",
+        "chapter_nos": body.get("chapter_nos"),
+        "max_chapters": body.get("max_chapters"),
+        "force": body.get("force"),
+        "preview_token": body.get("preview_token"),
+        "stop_on_error": body.get("stop_on_error"),
+    }
+    job = await create_job(db, "splitbook.writeback_batch.v1", payload, req_id)
+    await job_runner.enqueue(job["job_id"], req_id)
+    return SubmitJobResponse(job_id=job["job_id"], status="queued", queued_at=job["created_at"], request_id=req_id)
+
+
+@app.get("/v1/splitbooks/{splitbook_id}/ledger")
+async def splitbook_ledger_route(
+    splitbook_id: UUID,
+    view: str = Query(default="chapter"),
+    limit: int = Query(default=500, ge=1, le=2000),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    sb = await get_splitbook(db, str(splitbook_id))
+    if not sb:
+        raise HTTPException(status_code=404, detail="SPLITBOOK_NOT_FOUND")
+    view_norm = "character" if str(view).lower() == "character" else "chapter"
+    return await get_splitbook_ledger_view(db, str(splitbook_id), view=view_norm, limit=limit)
+
+
+@app.get("/v1/splitbooks/{splitbook_id}/outline")
+async def splitbook_outline_route(splitbook_id: UUID, db: AsyncSession = Depends(get_db)) -> dict:
+    sb = await get_splitbook(db, str(splitbook_id))
+    if not sb:
+        raise HTTPException(status_code=404, detail="SPLITBOOK_NOT_FOUND")
+    return await build_splitbook_outline(db, str(splitbook_id))
+
+
+@app.get("/v1/splitbooks/{splitbook_id}/scenes")
+async def splitbook_scene_view_route(
+    splitbook_id: UUID,
+    chapter_no: int | None = Query(default=None, ge=1, le=999999),
+    limit: int = Query(default=200, ge=1, le=1000),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    sb = await get_splitbook(db, str(splitbook_id))
+    if not sb:
+        raise HTTPException(status_code=404, detail="SPLITBOOK_NOT_FOUND")
+    return await get_splitbook_scene_view(db, str(splitbook_id), chapter_no=chapter_no, limit=limit)
+
+
+@app.get("/v1/splitbooks/{splitbook_id}/pairs")
+async def splitbook_pair_view_route(
+    splitbook_id: UUID,
+    chapter_no: int | None = Query(default=None, ge=1, le=999999),
+    min_confidence: float = Query(default=0.0, ge=0.0, le=1.0),
+    limit: int = Query(default=200, ge=1, le=1000),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    sb = await get_splitbook(db, str(splitbook_id))
+    if not sb:
+        raise HTTPException(status_code=404, detail="SPLITBOOK_NOT_FOUND")
+    return await get_splitbook_pair_view(
+        db,
+        str(splitbook_id),
+        chapter_no=chapter_no,
+        min_confidence=min_confidence,
+        limit=limit,
+    )
+
+
+@app.get("/v1/splitbooks/{splitbook_id}/qa_report")
+async def splitbook_qa_report_route(splitbook_id: UUID, db: AsyncSession = Depends(get_db)) -> dict:
+    sb = await get_splitbook(db, str(splitbook_id))
+    if not sb:
+        raise HTTPException(status_code=404, detail="SPLITBOOK_NOT_FOUND")
+    return await get_splitbook_qa_report(db, str(splitbook_id))
+
+
+@app.get("/v1/splitbooks/{splitbook_id}/chapter_pack")
+async def splitbook_chapter_pack_route(
+    splitbook_id: UUID,
+    chapter_no: int = Query(..., ge=1, le=999999),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    sb = await get_splitbook(db, str(splitbook_id))
+    if not sb:
+        raise HTTPException(status_code=404, detail="SPLITBOOK_NOT_FOUND")
+    return await build_splitbook_chapter_pack(db, str(splitbook_id), chapter_no=chapter_no)
+
+
+@app.post("/v1/splitbooks/{splitbook_id}/writeback")
+async def splitbook_writeback_route(splitbook_id: UUID, body: dict, db: AsyncSession = Depends(get_db)) -> dict:
+    sb = await get_splitbook(db, str(splitbook_id))
+    if not sb:
+        raise HTTPException(status_code=404, detail="SPLITBOOK_NOT_FOUND")
+    try:
+        return await writeback_splitbook_chapter(db, str(splitbook_id), body or {})
+    except RuntimeError as exc:
+        detail = str(exc)
+        if detail in {"WRITEBACK_CONTENT_REQUIRED"}:
+            raise HTTPException(status_code=400, detail=detail) from exc
+        raise
+
+
+@app.post("/v1/splitbooks/{splitbook_id}/chapter_health")
+async def splitbook_chapter_health_route(splitbook_id: UUID, body: dict, db: AsyncSession = Depends(get_db)) -> dict:
+    sb = await get_splitbook(db, str(splitbook_id))
+    if not sb:
+        raise HTTPException(status_code=404, detail="SPLITBOOK_NOT_FOUND")
+    return await splitbook_chapter_health_report(db, str(splitbook_id), body or {})
+
+
+@app.post("/v1/splitbooks/{splitbook_id}/anti_copy_check")
+async def splitbook_anti_copy_check_route(splitbook_id: UUID, body: dict, db: AsyncSession = Depends(get_db)) -> dict:
+    sb = await get_splitbook(db, str(splitbook_id))
+    if not sb:
+        raise HTTPException(status_code=404, detail="SPLITBOOK_NOT_FOUND")
+    try:
+        return await splitbook_anti_copy_check(db, str(splitbook_id), body or {})
+    except RuntimeError as exc:
+        detail = str(exc)
+        if detail in {"ANTI_COPY_CONTENT_REQUIRED", "ANTI_COPY_CONTENT_TOO_SHORT"}:
+            raise HTTPException(status_code=400, detail=detail) from exc
+        raise
+
+
+@app.post("/v1/splitbooks/library/build")
+async def splitbook_library_build_route(body: dict, db: AsyncSession = Depends(get_db)) -> dict:
+    try:
+        return await build_splitbook_template_library(db, body or {})
+    except RuntimeError as exc:
+        detail = str(exc)
+        if detail in {"SPLITBOOK_IDS_EMPTY", "SPLITBOOK_STATS_EMPTY"}:
+            raise HTTPException(status_code=400, detail=detail) from exc
+        raise
 
 
 @app.get("/v1/splitbooks/{splitbook_id}/diagnose_bundle")
@@ -4023,6 +6765,38 @@ async def list_jobs_route(
     return {"items": items}
 
 
+@app.delete("/v1/jobs")
+async def delete_jobs_route(
+    status: str | None = Query(default=None),
+    statuses: str | None = Query(default=None),
+    limit: int = Query(default=5000, ge=1, le=50000),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    status_value = str(status or "").strip().lower() or None
+    statuses_value = [str(x).strip().lower() for x in str(statuses or "").split(",") if str(x).strip()]
+    if status_value == "running" or "running" in statuses_value:
+        raise HTTPException(status_code=400, detail="JOB_DELETE_RUNNING_FORBIDDEN")
+    deleted_count = await delete_jobs(
+        db,
+        status=status_value,
+        statuses=statuses_value or None,
+        limit=limit,
+        exclude_running=True,
+    )
+    return {"ok": True, "deleted_count": int(deleted_count), "status": status_value, "statuses": statuses_value}
+
+
+@app.delete("/v1/jobs/{job_id}")
+async def delete_job_route(job_id: UUID, db: AsyncSession = Depends(get_db)) -> dict:
+    try:
+        row = await delete_job_by_id(db, str(job_id), allow_active=False)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not row:
+        raise HTTPException(status_code=404, detail="JOB_NOT_FOUND")
+    return {"ok": True, "deleted": {"job_id": str(row.get("job_id") or ""), "status": str(row.get("status") or "")}}
+
+
 @app.get("/v1/jobs/examples")
 async def list_job_examples_route() -> dict:
     return {"items": JOB_EXAMPLES}
@@ -4042,7 +6816,12 @@ async def cancel_job_route(job_id: UUID, db: AsyncSession = Depends(get_db)) -> 
     row = await get_job(db, job_id)
     if not row:
         raise HTTPException(status_code=404, detail="JOB_NOT_FOUND")
+    capability_id = str(row.get("capability_id") or "")
+    payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+    splitbook_id = str(payload.get("splitbook_id") or "").strip() if capability_id.startswith("splitbook.") else ""
     if row["status"] in ("succeeded", "failed", "canceled"):
+        if splitbook_id:
+            await reconcile_splitbook_state(db, splitbook_id=splitbook_id)
         return {"ok": True, "status": row["status"]}
     await db.execute(
         text(
@@ -4055,7 +6834,87 @@ async def cancel_job_route(job_id: UUID, db: AsyncSession = Depends(get_db)) -> 
         {"job_id": str(job_id)},
     )
     await db.commit()
+    if splitbook_id:
+        await reconcile_splitbook_state(db, splitbook_id=splitbook_id)
     return {"ok": True, "status": "canceled"}
+
+
+@app.post("/v1/jobs/{job_id}/resume")
+async def resume_job_route(
+    job_id: UUID,
+    request: Request,
+    force: bool = Query(default=False),
+    stale_seconds: int = Query(default=90, ge=10, le=3600),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    row = await get_job(db, job_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="JOB_NOT_FOUND")
+    capability_id = str(row.get("capability_id") or "")
+    payload = row.get("payload")
+    if not isinstance(payload, dict):
+        payload = {}
+    splitbook_id = str(payload.get("splitbook_id") or "").strip() if capability_id.startswith("splitbook.") else ""
+
+    status = str(row.get("status") or "").strip().lower()
+    if status == "succeeded":
+        raise HTTPException(status_code=400, detail="JOB_RESUME_FORBIDDEN_DONE")
+    if status == "canceled":
+        raise HTTPException(status_code=400, detail="JOB_RESUME_FORBIDDEN_CANCELED")
+
+    now = datetime.now(timezone.utc)
+    updated_at = row.get("updated_at")
+    stale = False
+    if isinstance(updated_at, datetime):
+        dt = updated_at if updated_at.tzinfo else updated_at.replace(tzinfo=timezone.utc)
+        stale = (now - dt).total_seconds() >= float(stale_seconds)
+    if status == "running" and not stale and not force:
+        raise HTTPException(status_code=409, detail="JOB_RESUME_RUNNING_ACTIVE")
+
+    progress = row.get("progress")
+    if not isinstance(progress, dict):
+        progress = {}
+    pct = int(progress.get("pct") or max(1, int(float(row.get("progress_value") or 0) * 100)))
+    await db.execute(
+        text(
+            """
+            UPDATE jobs
+            SET status='queued',
+                stage='QUEUED',
+                error=NULL,
+                progress=CAST(:progress AS jsonb),
+                progress_value=:progress_value,
+                updated_at=now()
+            WHERE job_id=:job_id
+            """
+        ),
+        {
+            "job_id": str(job_id),
+            "progress": json.dumps(
+                {
+                    "pct": max(1, min(99, pct)),
+                    "phase": "queued",
+                    "message": "任务已重新排队，等待继续执行",
+                    "counters": progress.get("counters") or {},
+                }
+            ),
+            "progress_value": max(0.01, min(0.99, max(1, pct) / 100.0)),
+        },
+    )
+    await db.commit()
+    if splitbook_id:
+        await reconcile_splitbook_state(db, splitbook_id=splitbook_id)
+
+    req_id = request_id(request)
+    await job_runner.enqueue(row["job_id"], str(payload.get("request_id") or req_id))
+    return {
+        "ok": True,
+        "job_id": str(job_id),
+        "status": "queued",
+        "stale": stale,
+        "forced": bool(force),
+        "request_id": req_id,
+    }
 
 
 @app.post("/v1/books/{book_id}/extract/structure_beats", response_model=SubmitJobResponse, status_code=202)
@@ -4069,6 +6928,12 @@ async def extract_structure_beats_route(
     payload = {"book_id": str(book_id), "scope": body.scope, "schema_ver": body.schema_ver}
     if body.llm_model:
         payload["llm_model"] = body.llm_model
+    _attach_trigger_meta(
+        payload,
+        trigger_source=body.trigger_source,
+        trigger_entry=body.trigger_entry,
+        trigger_mode=body.trigger_mode,
+    )
     row = await create_job(db, "extract.structure_beats.v1", payload, req_id)
     await job_runner.enqueue(row["job_id"], req_id)
     return SubmitJobResponse(job_id=row["job_id"], status="queued", queued_at=row["created_at"], request_id=req_id)
@@ -4123,6 +6988,24 @@ async def list_outline_versions_route(chapter_id: UUID, db: AsyncSession = Depen
     return {"items": items}
 
 
+@app.delete("/v1/chapters/{chapter_id}/outline_detail")
+async def delete_outline_detail_route(
+    chapter_id: UUID,
+    version: str = Query(default="latest"),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    try:
+        ver_num = None if str(version).strip().lower() == "latest" else int(version)
+        if ver_num is not None and ver_num < 1:
+            raise ValueError("INVALID_VERSION")
+        deleted = await delete_outline_detail_service(db, str(chapter_id), ver_num)
+        return {"ok": True, **deleted}
+    except RuntimeError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="INVALID_VERSION") from exc
+
+
 @app.get("/v1/chapters/{chapter_id}/outline_detail/diff")
 async def outline_detail_diff_route(
     chapter_id: UUID,
@@ -4162,6 +7045,198 @@ async def save_outline_detail_route(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@app.post("/v1/chapters/{chapter_id}/outline_detail/auto_generate")
+async def auto_generate_outline_detail_route(
+    chapter_id: UUID,
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    row = await db.execute(
+        text(
+            """
+            SELECT c.chapter_id::text AS chapter_id, c.book_id::text AS book_id, c.title AS chapter_title,
+                   c."order" AS chapter_no,
+                   v.volume_id::text AS volume_id, v.volume_no, v.title AS volume_title
+            FROM chapter c
+            LEFT JOIN volume v
+              ON v.book_id=c.book_id
+             AND c."order" BETWEEN v.start_chapter_no AND v.end_chapter_no
+            WHERE c.chapter_id=CAST(:chapter_id AS uuid)
+            ORDER BY v.volume_no DESC
+            LIMIT 1
+            """
+        ),
+        {"chapter_id": str(chapter_id)},
+    )
+    hit = row.mappings().first()
+    if not hit:
+        raise HTTPException(status_code=404, detail="CHAPTER_NOT_FOUND")
+
+    force = bool((body or {}).get("force", True))
+    if not force:
+        try:
+            existing = await get_outline_detail_service(db, str(chapter_id), None)
+            detail = existing.get("outline_detail") if isinstance(existing.get("outline_detail"), dict) else {}
+            nodes = detail.get("nodes") if isinstance(detail.get("nodes"), list) else []
+            if nodes:
+                return {
+                    "ok": True,
+                    "chapter_id": str(chapter_id),
+                    "reused": True,
+                    "outline": detail,
+                    "meta": {"reason": "outline_exists"},
+                }
+        except RuntimeError:
+            pass
+
+    book_id = str(hit.get("book_id") or "")
+    chapter_no = int(hit.get("chapter_no") or 0)
+    chapter_title = str(hit.get("chapter_title") or f"第{chapter_no}章").strip()
+    volume_id = str(hit.get("volume_id") or "").strip()
+
+    settings_value = await get_book_settings(db, book_id) or {}
+    brief_from_settings = settings_value.get("writing_brief") if isinstance(settings_value.get("writing_brief"), dict) else {}
+    outline_from_settings = settings_value.get("writing_master_outline") if isinstance(settings_value.get("writing_master_outline"), dict) else {}
+    volume_plan = await _load_active_volume_plan(db, book_id=book_id, volume_id=volume_id) if volume_id else None
+    plan_items = volume_plan.get("items") if isinstance(volume_plan, dict) and isinstance(volume_plan.get("items"), list) else []
+
+    structure_hints = _normalize_structure_hints(body or {})
+    splitbook_id = _resolve_splitbook_id_from_body(body or {})
+    if not splitbook_id:
+        splitbook_id = str((body or {}).get("splitbook_id") or "").strip()
+    splitbook_outline_reference: dict[str, Any] = {}
+    splitbook_chapter_pack: dict[str, Any] = {}
+    if splitbook_id:
+        structure_hints = await _merge_splitbook_hints(db, splitbook_id=splitbook_id, hints=structure_hints)
+        splitbook_outline_reference = await _build_splitbook_outline_reference(db, splitbook_id=splitbook_id)
+        try:
+            splitbook_chapter_pack = await build_splitbook_chapter_pack(db, splitbook_id, chapter_no if chapter_no > 0 else 1)
+        except Exception:
+            splitbook_chapter_pack = {}
+    safe_hints = _outline_safe_structure_hints(structure_hints)
+    prompt_reference_text, prompt_reference_source = _load_master_outline_prompt_reference()
+
+    plan_samples: list[dict[str, Any]] = []
+    for item in plan_items[:8]:
+        if not isinstance(item, dict):
+            continue
+        plan_samples.append(
+            {
+                "kind": str(item.get("kind") or ""),
+                "summary": str(item.get("summary") or "")[:180],
+                "target_window": str(item.get("target_window") or ""),
+                "priority": int(item.get("priority") or 3),
+            }
+        )
+
+    prompt_payload = {
+        "chapter": {
+            "chapter_no": chapter_no,
+            "chapter_title": chapter_title,
+            "volume_no": int(hit.get("volume_no") or 0),
+            "volume_title": str(hit.get("volume_title") or ""),
+        },
+        "writing_brief": _build_master_outline_brief_payload(brief_from_settings),
+        "master_outline": {
+            "summary": str(outline_from_settings.get("summary") or "")[:1200],
+            "core_conflict": str(outline_from_settings.get("core_conflict") or "")[:600],
+            "theme": str(outline_from_settings.get("theme") or "")[:200],
+            "phases": (outline_from_settings.get("phases") if isinstance(outline_from_settings.get("phases"), list) else [])[:10],
+        },
+        "volume_plan_items": plan_samples,
+        "material_guidance": material_guidance,
+        "structure_hints": safe_hints,
+        "splitbook_outline_reference": splitbook_outline_reference,
+        "splitbook_chapter_pack": {
+            "chapter_no": int(splitbook_chapter_pack.get("chapter_no") or chapter_no),
+            "key_conflicts": (splitbook_chapter_pack.get("key_conflicts") if isinstance(splitbook_chapter_pack.get("key_conflicts"), list) else [])[:5],
+            "foreshadow": (splitbook_chapter_pack.get("foreshadow") if isinstance(splitbook_chapter_pack.get("foreshadow"), list) else [])[:5],
+            "payoff": (splitbook_chapter_pack.get("payoff") if isinstance(splitbook_chapter_pack.get("payoff"), list) else [])[:5],
+            "growth": (splitbook_chapter_pack.get("growth") if isinstance(splitbook_chapter_pack.get("growth"), list) else [])[:5],
+        }
+        if splitbook_chapter_pack
+        else {},
+        "requirements": {
+            "language": "简体中文",
+            "node_count": 4,
+            "must_cover": ["目标", "冲突", "转折", "章末钩子"],
+            "anti_copy": "仅借鉴结构，不复述任何来源原句",
+        },
+    }
+    user_prompt = (
+        "请生成章节章纲（结构节点），用于后续正文生成。\n"
+        "输出 JSON：{chapter_title,nodes:[{node_id,type,summary}]}\n"
+        "规则：\n"
+        "1) 节点顺序建议 setup→conflict→turn→hook；可额外包含 payoff/reveal。\n"
+        "2) 每个节点 summary 要可执行、可写成正文。\n"
+        "3) 只借鉴拆书结构节奏，不可复述原文。\n"
+        "4) 必须与总纲/卷纲保持连贯。\n\n"
+        f"输入：{json.dumps(prompt_payload, ensure_ascii=False)}"
+    )
+    schema_hint = '{"chapter_title":"string","nodes":[{"node_id":"beat-setup","type":"setup","summary":"string"}]}'
+    system_prompt = (
+        "你是小说章节策划编辑，只输出合法 JSON。\n"
+        "以下为总纲提示词参考：\n"
+        f"{prompt_reference_text}"
+    )
+    try:
+        client = OllamaClient(settings.ollama_host)
+        raw = await client.chat_json(
+            model=DEFAULT_LLM_MODEL,
+            user=user_prompt,
+            system=system_prompt,
+            temperature=0.35,
+            max_tokens=1800,
+            timeout_s=150,
+            retries=1,
+            schema_hint=schema_hint,
+            validate=_validate_chapter_outline_ai_json,
+            meta={"route": "chapter_outline_auto_generate", "chapter_id": str(chapter_id)},
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"OUTLINE_AUTO_GENERATE_FAILED:{str(exc)[:200]}") from exc
+
+    outline_data = _normalize_chapter_outline_ai_json(raw if isinstance(raw, dict) else {}, chapter_title=chapter_title)
+    saved = await save_outline_detail_service(db, str(chapter_id), outline_data, "auto_generate_with_ai")
+    meta_payload = {
+        "basis": [
+            "writing_brief",
+            "master_outline",
+            "volume_plan",
+            "splitbook_structure" if splitbook_id else "structure_hints",
+            "prompt_md_template",
+        ],
+        "structure_hints_applied": int(structure_hints.get("total_lines") or 0),
+        "material_guidance_count": len(material_guidance),
+        "splitbook_id": splitbook_id or None,
+        "prompt_template_source": prompt_reference_source,
+        "ai_debug": {
+            "route": "chapter_outline_auto_generate",
+            "provider": "ollama",
+            "model": DEFAULT_LLM_MODEL,
+            "prompt_payload": prompt_payload,
+            "system_prompt": system_prompt,
+            "user_prompt": user_prompt,
+            "schema_hint": schema_hint,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        },
+    }
+    try:
+        chapter_settings = await get_chapter_settings(db, str(chapter_id))
+        chapter_settings_obj = chapter_settings if isinstance(chapter_settings, dict) else {}
+        chapter_settings_obj["writing_chapter_outline_meta"] = meta_payload
+        await set_chapter_settings(db, str(chapter_id), chapter_settings_obj)
+    except Exception:
+        pass
+    return {
+        "ok": True,
+        "chapter_id": str(chapter_id),
+        "saved": saved,
+        "outline": outline_data,
+        "meta": meta_payload,
+    }
+
+
 @app.post("/v1/chapters/{chapter_id}/outline_detail/apply_patches")
 async def apply_outline_patches_route(
     chapter_id: UUID,
@@ -4188,6 +7263,12 @@ async def apply_outline_patches_route(
         "auto_eval": body.auto_eval,
         "repair_txn_id": repair_txn_id,
     }
+    _attach_trigger_meta(
+        payload,
+        trigger_source=body.trigger_source,
+        trigger_entry=body.trigger_entry,
+        trigger_mode=body.trigger_mode,
+    )
     row = await create_job(db, "apply.measure.v1", payload, req_id)
     await job_runner.enqueue(row["job_id"], req_id)
     return {"ok": True, "repair_txn_id": repair_txn_id, "apply_job_id": str(row["job_id"])}
@@ -4236,6 +7317,145 @@ async def unified_search_route(
 async def create_skill_run_route(body: SkillRunCreateRequest, db: AsyncSession = Depends(get_db)) -> SkillRunCreateResponse:
     row = await create_skill_run(db, str(body.book_id), body.skill_name, body.schema_ver, body.output)
     return SkillRunCreateResponse(**row)
+
+
+@app.get("/v1/books/{book_id}/asset_snapshots")
+async def list_asset_snapshots_route(
+    book_id: UUID,
+    limit: int = Query(default=30, ge=1, le=200),
+    include_outline_versions: bool = Query(default=True),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    bid = str(book_id)
+    await _ensure_asset_snapshot_tables(db)
+    rows = await db.execute(
+        text(
+            """
+            SELECT s.snapshot_id::text AS snapshot_id, s.book_id::text AS book_id, s.snapshot_name, s.reason, s.tag,
+                   s.summary, s.created_by, s.created_at,
+                   COALESCE(i.item_count, 0)::int AS item_count
+            FROM asset_snapshot s
+            LEFT JOIN (
+              SELECT snapshot_id, COUNT(*)::int AS item_count
+              FROM asset_snapshot_item
+              GROUP BY snapshot_id
+            ) i ON i.snapshot_id=s.snapshot_id
+            WHERE s.book_id=CAST(:book_id AS uuid)
+            ORDER BY s.created_at DESC
+            LIMIT :limit
+            """
+        ),
+        {"book_id": bid, "limit": limit},
+    )
+    items = [dict(r) for r in rows.mappings().all()]
+    try:
+        current_state = await _collect_book_asset_state(db, book_id=bid, include_chapter_outlines=include_outline_versions)
+    except RuntimeError as exc:
+        if str(exc) == "BOOK_NOT_FOUND":
+            raise HTTPException(status_code=404, detail="BOOK_NOT_FOUND") from exc
+        raise
+    return {
+        "book_id": bid,
+        "items": items,
+        "current_state": current_state.get("summary") if isinstance(current_state.get("summary"), dict) else {},
+        "prompt_pack": _asset_optimize_prompt_pack(),
+    }
+
+
+@app.post("/v1/books/{book_id}/asset_snapshots/capture")
+async def capture_asset_snapshot_route(book_id: UUID, body: dict, db: AsyncSession = Depends(get_db)) -> dict:
+    bid = str(book_id)
+    snapshot_name = str((body or {}).get("snapshot_name") or "").strip()
+    reason = str((body or {}).get("reason") or "").strip()
+    tag = str((body or {}).get("tag") or "manual").strip() or "manual"
+    include_chapter_outlines = bool((body or {}).get("include_chapter_outlines", True))
+    if not snapshot_name:
+        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        snapshot_name = f"资产快照 {now_str}"
+    try:
+        out = await _capture_asset_snapshot(
+            db,
+            book_id=bid,
+            snapshot_name=snapshot_name,
+            reason=reason,
+            tag=tag,
+            include_chapter_outlines=include_chapter_outlines,
+        )
+        return {"ok": True, "book_id": bid, **out}
+    except RuntimeError as exc:
+        await db.rollback()
+        code = str(exc)
+        if code == "BOOK_NOT_FOUND":
+            raise HTTPException(status_code=404, detail=code) from exc
+        raise HTTPException(status_code=400, detail=code) from exc
+
+
+@app.get("/v1/books/{book_id}/asset_snapshots/{snapshot_id}")
+async def get_asset_snapshot_detail_route(book_id: UUID, snapshot_id: UUID, db: AsyncSession = Depends(get_db)) -> dict:
+    bid = str(book_id)
+    sid = str(snapshot_id)
+    await _ensure_asset_snapshot_tables(db)
+    head = await db.execute(
+        text(
+            """
+            SELECT snapshot_id::text AS snapshot_id, book_id::text AS book_id, snapshot_name, reason, tag, summary, created_by, created_at
+            FROM asset_snapshot
+            WHERE book_id=CAST(:book_id AS uuid)
+              AND snapshot_id=CAST(:snapshot_id AS uuid)
+            LIMIT 1
+            """
+        ),
+        {"book_id": bid, "snapshot_id": sid},
+    )
+    snapshot = head.mappings().first()
+    if not snapshot:
+        raise HTTPException(status_code=404, detail="ASSET_SNAPSHOT_NOT_FOUND")
+    item_rows = await db.execute(
+        text(
+            """
+            SELECT item_id::text AS item_id, asset_type, asset_key, ref_id::text AS ref_id, version, payload, created_at
+            FROM asset_snapshot_item
+            WHERE snapshot_id=CAST(:snapshot_id AS uuid)
+            ORDER BY asset_type ASC, asset_key ASC, created_at ASC
+            """
+        ),
+        {"snapshot_id": sid},
+    )
+    items = [dict(r) for r in item_rows.mappings().all()]
+    by_type: dict[str, int] = {}
+    for item in items:
+        key = str(item.get("asset_type") or "unknown")
+        by_type[key] = int(by_type.get(key) or 0) + 1
+    return {
+        "book_id": bid,
+        "snapshot": dict(snapshot),
+        "items": items,
+        "item_count": len(items),
+        "type_counts": by_type,
+    }
+
+
+@app.post("/v1/books/{book_id}/asset_snapshots/{snapshot_id}/rollback")
+async def rollback_asset_snapshot_route(book_id: UUID, snapshot_id: UUID, body: dict, db: AsyncSession = Depends(get_db)) -> dict:
+    bid = str(book_id)
+    sid = str(snapshot_id)
+    note = str((body or {}).get("note") or "").strip()
+    restore_chapter_outlines = bool((body or {}).get("restore_chapter_outlines", False))
+    try:
+        out = await _rollback_asset_snapshot(
+            db,
+            book_id=bid,
+            snapshot_id=sid,
+            note=note,
+            restore_chapter_outlines=restore_chapter_outlines,
+        )
+        return {"ok": True, "book_id": bid, "snapshot_id": sid, **out}
+    except RuntimeError as exc:
+        await db.rollback()
+        code = str(exc)
+        if code == "ASSET_SNAPSHOT_NOT_FOUND":
+            raise HTTPException(status_code=404, detail=code) from exc
+        raise HTTPException(status_code=400, detail=code) from exc
 
 
 @app.get("/v1/materials", response_model=MaterialCardListResponse)
@@ -4404,6 +7624,105 @@ async def import_materials_from_chunks_route(
     return {"ok": True, "created": created, "embedded": embedded, "failed": failed}
 
 
+@app.post("/v1/books/{book_id}/materials/import_from_splitbook/{splitbook_id}")
+async def import_materials_from_splitbook_route(
+    book_id: UUID,
+    splitbook_id: UUID,
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    splitbook = await get_splitbook(db, str(splitbook_id))
+    if not splitbook:
+        raise HTTPException(status_code=404, detail="SPLITBOOK_NOT_FOUND")
+
+    limit = max(1, min(1200, int((body or {}).get("limit") or 300)))
+    importance = max(1, min(5, int((body or {}).get("importance") or 3)))
+    auto_embed = bool((body or {}).get("auto_embed", True))
+    tag_base = str((body or {}).get("tag") or "splitbook_structure").strip() or "splitbook_structure"
+
+    ins = await db.execute(
+        text(
+            """
+            INSERT INTO material_card(book_id, source_type, title, content, tag, importance)
+            SELECT
+              CAST(:book_id AS uuid),
+              'splitbook_fact',
+              CONCAT('拆书#', COALESCE(f.chapter_no, 0), ' ', LEFT(COALESCE(f.chapter_title, ''), 40), ' [', COALESCE(f.fact_type, 'fact'), ']'),
+              LEFT(COALESCE(f.statement, ''), 2000),
+              CONCAT(:tag_base, ':', COALESCE(f.fact_type, 'fact')),
+              :importance
+            FROM splitbook_fact f
+            WHERE f.splitbook_id=CAST(:splitbook_id AS uuid)
+              AND COALESCE(f.statement, '') <> ''
+            ORDER BY COALESCE(f.chapter_no, 999999), f.created_at DESC
+            LIMIT :limit
+            RETURNING card_id::text AS card_id
+            """
+        ),
+        {
+            "book_id": str(book_id),
+            "splitbook_id": str(splitbook_id),
+            "tag_base": tag_base,
+            "importance": importance,
+            "limit": limit,
+        },
+    )
+    card_ids = [str(r.get("card_id") or "") for r in ins.mappings().all() if str(r.get("card_id") or "").strip()]
+    await db.commit()
+
+    created = len(card_ids)
+    embedded = 0
+    failed = 0
+    if auto_embed and card_ids:
+        rows = await db.execute(
+            text(
+                """
+                SELECT card_id::text AS card_id, content
+                FROM material_card
+                WHERE card_id = ANY(CAST(:card_ids AS uuid[]))
+                ORDER BY created_at ASC
+                """
+            ),
+            {"card_ids": card_ids},
+        )
+        records = [dict(r) for r in rows.mappings().all()]
+        if records:
+            client = OllamaClient(settings.ollama_host)
+            batch_size = 16
+            for i in range(0, len(records), batch_size):
+                batch = records[i : i + batch_size]
+                texts = [str(it.get("content") or "") for it in batch]
+                ids = [str(it.get("card_id") or "") for it in batch if str(it.get("card_id") or "").strip()]
+                if not ids:
+                    continue
+                try:
+                    vecs = await client.embeddings(
+                        model=settings.embedding_model,
+                        texts=texts,
+                        timeout_s=120,
+                        retries=1,
+                        meta={"job_type": "MATERIAL", "stage": "SPLITBOOK_IMPORT_EMBED"},
+                    )
+                    if len(vecs) != len(ids):
+                        failed += len(ids)
+                        continue
+                    for cid, vec in zip(ids, vecs):
+                        await upsert_material_embedding(db, card_id=cid, embedding=vec, model=settings.embedding_model)
+                        embedded += 1
+                except Exception:
+                    failed += len(ids)
+
+    return {
+        "ok": True,
+        "book_id": str(book_id),
+        "splitbook_id": str(splitbook_id),
+        "splitbook_name": str(splitbook.get("name") or ""),
+        "created": created,
+        "embedded": embedded,
+        "failed": failed,
+    }
+
+
 @app.get("/v1/chapters/{chapter_id}/ref_inbox")
 async def list_ref_inbox_route(
     chapter_id: UUID,
@@ -4497,6 +7816,14 @@ async def get_template_asset_route(asset_id: UUID, db: AsyncSession = Depends(ge
     return row
 
 
+@app.delete("/v1/templates/assets/{asset_id}")
+async def delete_template_asset_route(asset_id: UUID, db: AsyncSession = Depends(get_db)) -> dict:
+    row = await delete_template_asset(db, str(asset_id))
+    if not row:
+        raise HTTPException(status_code=404, detail="TEMPLATE_ASSET_NOT_FOUND")
+    return {"ok": True, "deleted": row}
+
+
 @app.post("/v1/chapters/{chapter_id}/ref_inbox/from_template")
 async def create_ref_inbox_from_template_route(
     chapter_id: UUID,
@@ -4560,6 +7887,12 @@ async def draft_commit_route(
         "profile_id_used": profile_id_used,
         "profile_version_used": profile_version_used,
     }
+    _attach_trigger_meta(
+        payload,
+        trigger_source=body.trigger_source,
+        trigger_entry=body.trigger_entry,
+        trigger_mode=body.trigger_mode,
+    )
     row = await create_job(db, "draft.commit.v1", payload, req_id)
     await job_runner.enqueue(row["job_id"], req_id)
     return SubmitJobResponse(job_id=row["job_id"], status="queued", queued_at=row["created_at"], request_id=req_id)
@@ -4606,6 +7939,14 @@ async def list_templates_route(
 ) -> TemplateListResponse:
     rows = await list_templates(db, str(profile_id), level, tag)
     return TemplateListResponse(items=[TemplateItem(**row) for row in rows])
+
+
+@app.delete("/v1/templates/{template_id}")
+async def delete_template_route(template_id: UUID, db: AsyncSession = Depends(get_db)) -> dict:
+    row = await delete_structure_template(db, str(template_id))
+    if not row:
+        raise HTTPException(status_code=404, detail="TEMPLATE_NOT_FOUND")
+    return {"ok": True, "deleted": row}
 
 
 @app.post("/v1/books/{book_id}/templates/recommend", response_model=TemplateListResponse)
@@ -6110,10 +9451,632 @@ async def _replace_chapter_settings(db: AsyncSession, chapter_id: str, settings_
     return normalized
 
 
+def _asset_optimize_prompt_pack() -> dict[str, str]:
+    return {
+        "review_and_plan": (
+            "你是“写作资产架构师”，请只处理结构，不生成正文，不复述原文。\n\n"
+            "任务：\n"
+            "1. 读取资产：创作简报、总纲、卷纲版本、章纲版本、素材卡、模板资产、风格画像。\n"
+            "2. 做一致性审查：目标冲突、设定冲突、节奏冲突、重复资产、失效资产。\n"
+            "3. 输出“优化计划”：\n"
+            "   - 保留项（原因）\n"
+            "   - 合并项（A+B->C）\n"
+            "   - 删除项（原因+风险）\n"
+            "   - 新增项（补齐缺口）\n"
+            "4. 输出“可执行变更清单（JSON）”，每条必须包含：\n"
+            "   - asset_type\n"
+            "   - action (keep/merge/delete/create/update)\n"
+            "   - target_id\n"
+            "   - patch\n"
+            "   - reason\n"
+            "   - risk_level\n"
+            "5. 严格要求：\n"
+            "   - 禁止输出原书原文\n"
+            "   - 禁止改写剧情正文\n"
+            "   - 只允许结构化建议"
+        ),
+        "rollback_safe_patch": (
+            "请基于“优化计划JSON”生成“回滚安全版本”：\n"
+            "- 每个变更都要附 before/after 摘要\n"
+            "- 每个变更都要给 rollback_hint\n"
+            "- 若风险为 high，标记 requires_manual_confirm=true"
+        ),
+    }
+
+
+async def _ensure_asset_snapshot_tables(db: AsyncSession) -> None:
+    await db.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS asset_snapshot (
+              snapshot_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+              book_id UUID NOT NULL REFERENCES book(book_id) ON DELETE CASCADE,
+              snapshot_name TEXT NOT NULL DEFAULT '',
+              reason TEXT NOT NULL DEFAULT '',
+              tag TEXT NOT NULL DEFAULT '',
+              summary JSONB NOT NULL DEFAULT '{}'::jsonb,
+              created_by TEXT NOT NULL DEFAULT 'desktop_user',
+              created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+            """
+        )
+    )
+    await db.execute(text("CREATE INDEX IF NOT EXISTS idx_asset_snapshot_book_time ON asset_snapshot(book_id, created_at DESC)"))
+    await db.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS asset_snapshot_item (
+              item_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+              snapshot_id UUID NOT NULL REFERENCES asset_snapshot(snapshot_id) ON DELETE CASCADE,
+              asset_type TEXT NOT NULL,
+              asset_key TEXT NOT NULL DEFAULT '',
+              ref_id UUID NULL,
+              version INTEGER NULL,
+              payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+              created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+              UNIQUE(snapshot_id, asset_type, asset_key)
+            )
+            """
+        )
+    )
+    await db.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_asset_snapshot_item_snapshot ON asset_snapshot_item(snapshot_id, asset_type, created_at DESC)")
+    )
+
+
+def _safe_uuid_or_none(raw: str | None) -> str | None:
+    value = str(raw or "").strip()
+    if not value:
+        return None
+    try:
+        return str(UUID(value))
+    except Exception:
+        return None
+
+
+async def _collect_book_asset_state(
+    db: AsyncSession,
+    *,
+    book_id: str,
+    include_chapter_outlines: bool = True,
+) -> dict[str, Any]:
+    book_row = await db.execute(
+        text(
+            """
+            SELECT b.book_id::text AS book_id, b.title, b.profile_id::text AS profile_id, b.updated_at
+            FROM book b
+            WHERE b.book_id=CAST(:book_id AS uuid)
+            LIMIT 1
+            """
+        ),
+        {"book_id": book_id},
+    )
+    book = book_row.mappings().first()
+    if not book:
+        raise RuntimeError("BOOK_NOT_FOUND")
+
+    settings_value = await get_book_settings(db, book_id) or {}
+    master_outline = settings_value.get("writing_master_outline") if isinstance(settings_value.get("writing_master_outline"), dict) else {}
+
+    chapter_count_row = await db.execute(
+        text("SELECT COUNT(*)::int AS c FROM chapter WHERE book_id=CAST(:book_id AS uuid)"),
+        {"book_id": book_id},
+    )
+    chapter_count = int(chapter_count_row.mappings().first().get("c") or 0)
+
+    volume_count_row = await db.execute(
+        text("SELECT COUNT(*)::int AS c FROM volume WHERE book_id=CAST(:book_id AS uuid)"),
+        {"book_id": book_id},
+    )
+    volume_count = int(volume_count_row.mappings().first().get("c") or 0)
+
+    material_count_row = await db.execute(
+        text("SELECT COUNT(*)::int AS c FROM material_card WHERE book_id=CAST(:book_id AS uuid)"),
+        {"book_id": book_id},
+    )
+    material_count = int(material_count_row.mappings().first().get("c") or 0)
+
+    template_default_row = await db.execute(
+        text(
+            """
+            SELECT COUNT(*)::int AS c
+            FROM book_default_assets d
+            JOIN asset_bundle_item i ON i.bundle_id=d.bundle_id
+            WHERE d.book_id=CAST(:book_id AS uuid)
+              AND i.item_type='template'
+            """
+        ),
+        {"book_id": book_id},
+    )
+    template_default_count = int(template_default_row.mappings().first().get("c") or 0)
+
+    template_used_row = await db.execute(
+        text(
+            """
+            SELECT COUNT(DISTINCT x.tid)::int AS c
+            FROM (
+              SELECT unnest(injected_template_ids) AS tid
+              FROM asset_usage_log
+              WHERE book_id=CAST(:book_id AS uuid)
+            ) x
+            """
+        ),
+        {"book_id": book_id},
+    )
+    template_used_count = int(template_used_row.mappings().first().get("c") or 0)
+
+    profile_row = await db.execute(
+        text(
+            """
+            SELECT p.profile_id::text AS profile_id, p.name, p.active_version, p.updated_at
+            FROM profile p
+            JOIN book b ON b.profile_id=p.profile_id
+            WHERE b.book_id=CAST(:book_id AS uuid)
+            LIMIT 1
+            """
+        ),
+        {"book_id": book_id},
+    )
+    profile_hit = profile_row.mappings().first()
+
+    volume_plan_rows = await db.execute(
+        text(
+            """
+            SELECT v.volume_id::text AS volume_id, v.volume_no, v.title,
+                   p.vol_plan_id::text AS vol_plan_id, p.version, p.created_at
+            FROM volume v
+            LEFT JOIN volume_plan p
+              ON p.volume_id=v.volume_id
+             AND p.status='active'
+            WHERE v.book_id=CAST(:book_id AS uuid)
+            ORDER BY v.volume_no ASC
+            """
+        ),
+        {"book_id": book_id},
+    )
+    active_volume_plans = [dict(r) for r in volume_plan_rows.mappings().all()]
+
+    outline_rows: list[dict[str, Any]] = []
+    if include_chapter_outlines:
+        outline_res = await db.execute(
+            text(
+                """
+                SELECT c.chapter_id::text AS chapter_id, c."order" AS chapter_no, c.title,
+                       COALESCE(o.version, 0)::int AS outline_version
+                FROM chapter c
+                LEFT JOIN LATERAL (
+                  SELECT version
+                  FROM outline
+                  WHERE chapter_id=c.chapter_id
+                    AND scope='chapter'
+                  ORDER BY version DESC
+                  LIMIT 1
+                ) o ON true
+                WHERE c.book_id=CAST(:book_id AS uuid)
+                ORDER BY c."order" ASC
+                """
+            ),
+            {"book_id": book_id},
+        )
+        outline_rows = [dict(r) for r in outline_res.mappings().all()]
+
+    style_row = await db.execute(
+        text(
+            """
+            SELECT skill_run_id::text AS skill_run_id, output, created_at
+            FROM skill_run
+            WHERE book_id=CAST(:book_id AS uuid)
+              AND skill_name='STYLE_EVOLVE_V1'
+            ORDER BY created_at DESC
+            LIMIT 1
+            """
+        ),
+        {"book_id": book_id},
+    )
+    style_hit = style_row.mappings().first()
+
+    items: list[dict[str, Any]] = [
+        {
+            "asset_type": "book_settings",
+            "asset_key": "book_settings",
+            "ref_id": None,
+            "version": None,
+            "payload": {"settings": settings_value},
+        },
+        {
+            "asset_type": "master_outline",
+            "asset_key": "writing_master_outline",
+            "ref_id": None,
+            "version": int(master_outline.get("version") or 0) if isinstance(master_outline, dict) else 0,
+            "payload": {"master_outline": master_outline},
+        },
+    ]
+    if profile_hit:
+        items.append(
+            {
+                "asset_type": "profile",
+                "asset_key": str(profile_hit.get("profile_id") or ""),
+                "ref_id": str(profile_hit.get("profile_id") or ""),
+                "version": int(profile_hit.get("active_version") or 1),
+                "payload": {
+                    "name": str(profile_hit.get("name") or ""),
+                    "updated_at": str(profile_hit.get("updated_at") or ""),
+                },
+            }
+        )
+    for row in active_volume_plans:
+        volume_id = str(row.get("volume_id") or "").strip()
+        if not volume_id:
+            continue
+        items.append(
+            {
+                "asset_type": "volume_plan",
+                "asset_key": volume_id,
+                "ref_id": volume_id,
+                "version": int(row.get("version") or 0),
+                "payload": {
+                    "volume_no": int(row.get("volume_no") or 0),
+                    "volume_title": str(row.get("title") or ""),
+                    "vol_plan_id": str(row.get("vol_plan_id") or ""),
+                    "plan_created_at": str(row.get("created_at") or ""),
+                },
+            }
+        )
+    for row in outline_rows:
+        chapter_id = str(row.get("chapter_id") or "").strip()
+        if not chapter_id:
+            continue
+        items.append(
+            {
+                "asset_type": "chapter_outline",
+                "asset_key": chapter_id,
+                "ref_id": chapter_id,
+                "version": int(row.get("outline_version") or 0),
+                "payload": {
+                    "chapter_no": int(row.get("chapter_no") or 0),
+                    "chapter_title": str(row.get("title") or ""),
+                },
+            }
+        )
+    if style_hit:
+        out_obj = style_hit.get("output") if isinstance(style_hit.get("output"), dict) else {}
+        profile_ver_after = int((((out_obj.get("result") or {}) if isinstance(out_obj.get("result"), dict) else {}).get("profile_version_after") or 0))
+        items.append(
+            {
+                "asset_type": "style_evolution",
+                "asset_key": "latest",
+                "ref_id": None,
+                "version": profile_ver_after if profile_ver_after > 0 else None,
+                "payload": {
+                    "skill_run_id": str(style_hit.get("skill_run_id") or ""),
+                    "created_at": str(style_hit.get("created_at") or ""),
+                    "profile_version_after": profile_ver_after,
+                },
+            }
+        )
+
+    summary = {
+        "book_id": str(book.get("book_id") or book_id),
+        "book_title": str(book.get("title") or ""),
+        "captured_at": datetime.now(timezone.utc).isoformat(),
+        "counts": {
+            "chapters": chapter_count,
+            "volumes": volume_count,
+            "material_cards": material_count,
+            "template_defaults": template_default_count,
+            "template_used_distinct": template_used_count,
+            "chapter_outline_versions": len([x for x in outline_rows if int(x.get("outline_version") or 0) > 0]),
+        },
+        "active_versions": {
+            "profile_id": str((profile_hit or {}).get("profile_id") or ""),
+            "profile_version": int((profile_hit or {}).get("active_version") or 0),
+            "volume_plan_versions": [
+                {
+                    "volume_id": str(v.get("volume_id") or ""),
+                    "volume_no": int(v.get("volume_no") or 0),
+                    "version": int(v.get("version") or 0),
+                }
+                for v in active_volume_plans
+                if str(v.get("volume_id") or "").strip()
+            ],
+        },
+    }
+    return {
+        "summary": summary,
+        "items": items,
+    }
+
+
+async def _capture_asset_snapshot(
+    db: AsyncSession,
+    *,
+    book_id: str,
+    snapshot_name: str,
+    reason: str,
+    tag: str,
+    include_chapter_outlines: bool = True,
+) -> dict[str, Any]:
+    await _ensure_asset_snapshot_tables(db)
+    state = await _collect_book_asset_state(db, book_id=book_id, include_chapter_outlines=include_chapter_outlines)
+    summary = state.get("summary") if isinstance(state.get("summary"), dict) else {}
+    items = state.get("items") if isinstance(state.get("items"), list) else []
+    created = await db.execute(
+        text(
+            """
+            INSERT INTO asset_snapshot(book_id, snapshot_name, reason, tag, summary)
+            VALUES (CAST(:book_id AS uuid), :snapshot_name, :reason, :tag, CAST(:summary AS jsonb))
+            RETURNING snapshot_id::text AS snapshot_id, book_id::text AS book_id, snapshot_name, reason, tag, summary, created_by, created_at
+            """
+        ),
+        {
+            "book_id": book_id,
+            "snapshot_name": snapshot_name,
+            "reason": reason,
+            "tag": tag,
+            "summary": json.dumps(summary, ensure_ascii=False),
+        },
+    )
+    row = created.mappings().first()
+    if not row:
+        raise RuntimeError("ASSET_SNAPSHOT_CAPTURE_FAILED")
+    snapshot_id = str(row.get("snapshot_id") or "")
+
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        ref_id = _safe_uuid_or_none(str(item.get("ref_id") or ""))
+        await db.execute(
+            text(
+                """
+                INSERT INTO asset_snapshot_item(snapshot_id, asset_type, asset_key, ref_id, version, payload)
+                VALUES (
+                  CAST(:snapshot_id AS uuid),
+                  :asset_type,
+                  :asset_key,
+                  CAST(:ref_id AS uuid),
+                  :version,
+                  CAST(:payload AS jsonb)
+                )
+                ON CONFLICT (snapshot_id, asset_type, asset_key)
+                DO UPDATE SET
+                  ref_id=EXCLUDED.ref_id,
+                  version=EXCLUDED.version,
+                  payload=EXCLUDED.payload,
+                  created_at=now()
+                """
+            ),
+            {
+                "snapshot_id": snapshot_id,
+                "asset_type": str(item.get("asset_type") or "unknown"),
+                "asset_key": str(item.get("asset_key") or ""),
+                "ref_id": ref_id,
+                "version": int(item.get("version") or 0) if item.get("version") is not None else None,
+                "payload": json.dumps(item.get("payload") if isinstance(item.get("payload"), dict) else {}, ensure_ascii=False),
+            },
+        )
+    await db.commit()
+    return {
+        "snapshot": dict(row),
+        "item_count": len(items),
+        "summary": summary,
+    }
+
+
+async def _rollback_asset_snapshot(
+    db: AsyncSession,
+    *,
+    book_id: str,
+    snapshot_id: str,
+    note: str,
+    restore_chapter_outlines: bool,
+) -> dict[str, Any]:
+    await _ensure_asset_snapshot_tables(db)
+    snap_res = await db.execute(
+        text(
+            """
+            SELECT snapshot_id::text AS snapshot_id, book_id::text AS book_id, snapshot_name, reason, tag, summary, created_by, created_at
+            FROM asset_snapshot
+            WHERE snapshot_id=CAST(:snapshot_id AS uuid)
+              AND book_id=CAST(:book_id AS uuid)
+            LIMIT 1
+            """
+        ),
+        {"snapshot_id": snapshot_id, "book_id": book_id},
+    )
+    snapshot = snap_res.mappings().first()
+    if not snapshot:
+        raise RuntimeError("ASSET_SNAPSHOT_NOT_FOUND")
+
+    item_res = await db.execute(
+        text(
+            """
+            SELECT item_id::text AS item_id, asset_type, asset_key, ref_id::text AS ref_id, version, payload, created_at
+            FROM asset_snapshot_item
+            WHERE snapshot_id=CAST(:snapshot_id AS uuid)
+            ORDER BY created_at ASC
+            """
+        ),
+        {"snapshot_id": snapshot_id},
+    )
+    items = [dict(r) for r in item_res.mappings().all()]
+    by_type: dict[str, list[dict[str, Any]]] = {}
+    for item in items:
+        by_type.setdefault(str(item.get("asset_type") or "unknown"), []).append(item)
+
+    result = {"applied": [], "skipped": [], "errors": []}
+
+    settings_items = by_type.get("book_settings") or []
+    if settings_items:
+        settings_payload = settings_items[0].get("payload") if isinstance(settings_items[0].get("payload"), dict) else {}
+        settings_obj = settings_payload.get("settings") if isinstance(settings_payload.get("settings"), dict) else {}
+        await db.execute(
+            text(
+                """
+                INSERT INTO book_settings(book_id, settings, updated_at)
+                VALUES (CAST(:book_id AS uuid), CAST(:settings AS jsonb), now())
+                ON CONFLICT (book_id)
+                DO UPDATE SET settings=EXCLUDED.settings, updated_at=now()
+                """
+            ),
+            {"book_id": book_id, "settings": json.dumps(settings_obj, ensure_ascii=False)},
+        )
+        result["applied"].append({"asset_type": "book_settings", "message": "已回滚书籍设置"})
+
+    profile_items = by_type.get("profile") or []
+    if profile_items:
+        profile_item = profile_items[0]
+        profile_id = str(profile_item.get("ref_id") or profile_item.get("asset_key") or "").strip()
+        profile_version = int(profile_item.get("version") or 0)
+        if profile_id and profile_version > 0:
+            await db.execute(
+                text("UPDATE profile SET active_version=:version, updated_at=now() WHERE profile_id=CAST(:profile_id AS uuid)"),
+                {"profile_id": profile_id, "version": profile_version},
+            )
+            result["applied"].append(
+                {"asset_type": "profile", "profile_id": profile_id, "profile_version": profile_version, "message": "已回滚画像激活版本"}
+            )
+
+    for item in by_type.get("volume_plan") or []:
+        volume_id = str(item.get("ref_id") or item.get("asset_key") or "").strip()
+        version = int(item.get("version") or 0)
+        if not volume_id or version <= 0:
+            result["skipped"].append({"asset_type": "volume_plan", "volume_id": volume_id, "reason": "缺少版本信息"})
+            continue
+        target_row = await db.execute(
+            text(
+                """
+                SELECT vol_plan_id::text AS vol_plan_id
+                FROM volume_plan
+                WHERE volume_id=CAST(:volume_id AS uuid) AND version=:version
+                LIMIT 1
+                """
+            ),
+            {"volume_id": volume_id, "version": version},
+        )
+        target = target_row.mappings().first()
+        if not target:
+            result["errors"].append(
+                {
+                    "asset_type": "volume_plan",
+                    "volume_id": volume_id,
+                    "version": version,
+                    "error": "TARGET_VERSION_NOT_FOUND",
+                }
+            )
+            continue
+        await db.execute(
+            text("UPDATE volume_plan SET status='archived' WHERE volume_id=CAST(:volume_id AS uuid) AND status='active'"),
+            {"volume_id": volume_id},
+        )
+        await db.execute(
+            text("UPDATE volume_plan SET status='active' WHERE volume_id=CAST(:volume_id AS uuid) AND version=:version"),
+            {"volume_id": volume_id, "version": version},
+        )
+        result["applied"].append(
+            {"asset_type": "volume_plan", "volume_id": volume_id, "version": version, "message": "已切换分卷方案版本"}
+        )
+
+    if restore_chapter_outlines:
+        for item in by_type.get("chapter_outline") or []:
+            chapter_id = str(item.get("ref_id") or item.get("asset_key") or "").strip()
+            target_version = int(item.get("version") or 0)
+            if not chapter_id or target_version <= 0:
+                continue
+            content_row = await db.execute(
+                text(
+                    """
+                    SELECT content, title
+                    FROM outline
+                    WHERE chapter_id=CAST(:chapter_id AS uuid)
+                      AND scope='chapter'
+                      AND version=:version
+                    LIMIT 1
+                    """
+                ),
+                {"chapter_id": chapter_id, "version": target_version},
+            )
+            target = content_row.mappings().first()
+            if not target:
+                result["errors"].append(
+                    {
+                        "asset_type": "chapter_outline",
+                        "chapter_id": chapter_id,
+                        "version": target_version,
+                        "error": "OUTLINE_VERSION_NOT_FOUND",
+                    }
+                )
+                continue
+            latest_row = await db.execute(
+                text(
+                    """
+                    SELECT COALESCE(MAX(version), 0)::int AS latest_version
+                    FROM outline
+                    WHERE chapter_id=CAST(:chapter_id AS uuid)
+                      AND scope='chapter'
+                    """
+                ),
+                {"chapter_id": chapter_id},
+            )
+            latest_version = int((latest_row.mappings().first() or {}).get("latest_version") or 0)
+            if latest_version == target_version:
+                result["skipped"].append(
+                    {"asset_type": "chapter_outline", "chapter_id": chapter_id, "version": target_version, "reason": "已是当前最新版本"}
+                )
+                continue
+            chapter_book = await db.execute(
+                text("SELECT book_id::text AS book_id FROM chapter WHERE chapter_id=CAST(:chapter_id AS uuid) LIMIT 1"),
+                {"chapter_id": chapter_id},
+            )
+            chapter_book_hit = chapter_book.mappings().first()
+            if not chapter_book_hit:
+                result["errors"].append({"asset_type": "chapter_outline", "chapter_id": chapter_id, "error": "CHAPTER_NOT_FOUND"})
+                continue
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO outline(book_id, chapter_id, scope, title, version, content)
+                    VALUES (
+                      CAST(:book_id AS uuid),
+                      CAST(:chapter_id AS uuid),
+                      'chapter',
+                      :title,
+                      :version,
+                      CAST(:content AS jsonb)
+                    )
+                    """
+                ),
+                {
+                    "book_id": str(chapter_book_hit.get("book_id") or ""),
+                    "chapter_id": chapter_id,
+                    "title": f"{str(target.get('title') or 'chapter_outline')} | rollback_snapshot",
+                    "version": latest_version + 1,
+                    "content": json.dumps(target.get("content") if isinstance(target.get("content"), dict) else {}, ensure_ascii=False),
+                },
+            )
+            result["applied"].append(
+                {
+                    "asset_type": "chapter_outline",
+                    "chapter_id": chapter_id,
+                    "from_version": latest_version,
+                    "to_version": latest_version + 1,
+                    "source_version": target_version,
+                    "message": "已创建回滚章纲版本",
+                }
+            )
+
+    await db.commit()
+    return {
+        "snapshot": dict(snapshot),
+        "note": note,
+        "restore_chapter_outlines": restore_chapter_outlines,
+        "result": result,
+    }
+
+
 WORKFLOW_DEFINITIONS: dict[str, dict] = {
     "draft_runner_v1": {
         "workflow_id": "draft_runner_v1",
-        "version": 1,
+        "version": 2,
         "nodes": [
             {"id": "resolve_chapter", "type": "sql", "inputs": {"query_id": "draft.resolve_chapter"}},
             {"id": "load_context", "type": "sql", "inputs": {"query_id": "draft.load_context"}},
@@ -6124,6 +10087,7 @@ WORKFLOW_DEFINITIONS: dict[str, dict] = {
             {"id": "chapter_orchestrator", "type": "rule", "inputs": {"fn": "chapter_orchestrator_v1"}},
             {"id": "pacing_controller", "type": "rule", "inputs": {"fn": "pacing_controller_v1"}},
             {"id": "task_intent_mapper", "type": "rule", "inputs": {"fn": "task_intent_mapper_v1"}},
+            {"id": "memory_pack", "type": "memory_pack", "inputs": {"task_type": "write_chapter", "enabled": True}},
             {"id": "compose_prompt", "type": "compose", "inputs": {"template_id": "prompt.draft_runner_v2"}},
             {
                 "id": "llm_generate",
@@ -6132,7 +10096,7 @@ WORKFLOW_DEFINITIONS: dict[str, dict] = {
                     "provider": "ollama",
                     "model": DEFAULT_LLM_MODEL,
                     "temperature": 0.75,
-                    "max_tokens": 2200,
+                    "max_tokens": 5200,
                 },
             },
             {"id": "post_extract_actions", "type": "rule", "inputs": {"fn": "post_extract_actions_v1"}},
@@ -6140,6 +10104,7 @@ WORKFLOW_DEFINITIONS: dict[str, dict] = {
             {"id": "quality_report", "type": "rule", "inputs": {"fn": "quality_report_v1"}},
             {"id": "update_reader_state", "type": "rule", "inputs": {"fn": "update_reader_state_v1"}},
             {"id": "commit_draft_and_logs", "type": "sql", "inputs": {"query_id": "draft.commit_all"}},
+            {"id": "memory_writeback", "type": "memory_writeback", "inputs": {"enabled": True, "persist": True}},
             {"id": "audit_snapshot", "type": "sql", "inputs": {"query_id": "draft.write_audit_snapshot"}},
         ],
     }
@@ -7521,6 +11486,33 @@ async def _workflow_sql_execute(query_id: str, ctx: dict, db: AsyncSession) -> d
         )
         book_settings = await get_book_settings(db, str(row.get("book_id"))) or {}
         reader_state = await _load_latest_reader_state(db, book_id=str(row.get("book_id")))
+        outline_row = await db.execute(
+            text(
+                """
+                SELECT version, content
+                FROM outline
+                WHERE chapter_id=CAST(:chapter_id AS uuid)
+                  AND scope='chapter'
+                ORDER BY version DESC, created_at DESC
+                LIMIT 1
+                """
+            ),
+            {"chapter_id": chapter_id},
+        )
+        outline_hit = outline_row.mappings().first()
+        outline_content = outline_hit.get("content") if outline_hit and isinstance(outline_hit.get("content"), dict) else {}
+        outline_nodes_raw = outline_content.get("nodes") if isinstance(outline_content.get("nodes"), list) else []
+        outline_nodes: list[dict] = []
+        for n in outline_nodes_raw[:20]:
+            if not isinstance(n, dict):
+                continue
+            outline_nodes.append(
+                {
+                    "node_id": str(n.get("node_id") or ""),
+                    "type": str(n.get("type") or ""),
+                    "summary": str(n.get("summary") or "")[:180],
+                }
+            )
         return {
             "context": {
                 "book_title": str(row.get("book_title") or ""),
@@ -7528,6 +11520,11 @@ async def _workflow_sql_execute(query_id: str, ctx: dict, db: AsyncSession) -> d
                 "recent_chapters": [dict(x) for x in recent.mappings().all()],
             },
             "book_settings": book_settings if isinstance(book_settings, dict) else {},
+            "chapter_outline": {
+                "version": int((outline_hit or {}).get("version") or 0),
+                "chapter_title": str(outline_content.get("chapter_title") or ""),
+                "nodes": outline_nodes,
+            },
             "reader_state": reader_state,
         }
 
@@ -7757,15 +11754,175 @@ async def _workflow_sql_execute(query_id: str, ctx: dict, db: AsyncSession) -> d
     raise RuntimeError("QUERY_ID_NOT_FOUND")
 
 
+def _workflow_parse_bool(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    raw = str(value).strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def _workflow_parse_int(value: Any, default: int, low: int, high: int) -> int:
+    try:
+        parsed = int(value)
+    except Exception:
+        parsed = int(default)
+    return max(low, min(high, parsed))
+
+
+async def _workflow_load_memory_conflict_card(
+    db: AsyncSession,
+    *,
+    book_id: str,
+    chapter_id: str,
+    chapter_no: int,
+) -> dict[str, Any]:
+    params: dict[str, Any] = {"book_id": book_id}
+    cond = ""
+    if chapter_id:
+        cond = "AND chapter_id=CAST(:chapter_id AS uuid)"
+        params["chapter_id"] = chapter_id
+    elif chapter_no > 0:
+        cond = "AND chapter_no=:chapter_no"
+        params["chapter_no"] = chapter_no
+    else:
+        return {}
+    row = (
+        await db.execute(
+            text(
+                f"""
+                SELECT payload
+                FROM chapter_scene_pack
+                WHERE book_id=CAST(:book_id AS uuid) {cond}
+                ORDER BY created_at DESC
+                LIMIT 1
+                """
+            ),
+            params,
+        )
+    ).mappings().first()
+    payload = row.get("payload") if row and isinstance(row.get("payload"), dict) else {}
+    return payload.get("conflict_card") if isinstance(payload.get("conflict_card"), dict) else {}
+
+
+async def _workflow_load_overdue_foreshadow_seeds(
+    db: AsyncSession,
+    *,
+    book_id: str,
+    chapter_no: int,
+    limit: int = 8,
+) -> list[dict[str, Any]]:
+    if chapter_no <= 0:
+        return []
+    lim = _workflow_parse_int(limit, 8, 1, 20)
+    rows = (
+        await db.execute(
+            text(
+                """
+                SELECT
+                  f.foreshadow_id::text AS foreshadow_id,
+                  f.title,
+                  cp."order" AS planned_chapter_no
+                FROM foreshadow f
+                JOIN chapter cp ON cp.chapter_id=f.planned_payoff_chapter_id
+                WHERE f.book_id=CAST(:book_id AS uuid)
+                  AND f.status IN ('seeded', 'reinforced', 'payoff_planned')
+                  AND cp."order" <= :chapter_no
+                ORDER BY cp."order" ASC, f.priority DESC, f.updated_at DESC
+                LIMIT :limit
+                """
+            ),
+            {"book_id": book_id, "chapter_no": chapter_no, "limit": lim},
+        )
+    ).mappings().all()
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in rows:
+        title = str((row or {}).get("title") or "").strip()
+        if not title:
+            continue
+        key = title.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(
+            {
+                "foreshadow_id": str((row or {}).get("foreshadow_id") or ""),
+                "title": title[:80],
+                "planned_chapter_no": int((row or {}).get("planned_chapter_no") or 0),
+            }
+        )
+    return out
+
+
+def _workflow_build_memory_focus_instruction(
+    *,
+    chapter_goal: str,
+    conflict_label: str,
+    upgrade_method: str,
+    cliffhanger: str,
+    task_types: list[str],
+    overdue_titles: list[str],
+) -> str:
+    parts: list[str] = []
+    if chapter_goal:
+        parts.append(f"本章目标是{chapter_goal}")
+    if conflict_label:
+        parts.append(f"冲突主轴为{conflict_label}")
+    if upgrade_method:
+        parts.append(f"冲突升级方式为{upgrade_method}")
+    if cliffhanger:
+        parts.append(f"章末钩子需指向{cliffhanger}")
+    if task_types:
+        parts.append(f"关键任务包含{'/'.join(task_types[:6])}")
+    if overdue_titles:
+        parts.append(f"优先处理到期伏笔：{'、'.join(overdue_titles[:4])}")
+    if not parts:
+        return ""
+    text_value = "；".join(parts)
+    if not text_value.endswith("。"):
+        text_value += "。"
+    return text_value[:320]
+
+
 def _workflow_compose_prompt(ctx: dict, template_id: str) -> dict:
     if template_id not in {"prompt.draft_runner_v1", "prompt.draft_runner_v2"}:
         raise RuntimeError("PROMPT_TEMPLATE_NOT_FOUND")
     context = ctx.get("context") if isinstance(ctx.get("context"), dict) else {}
+    settings_obj = ctx.get("book_settings") if isinstance(ctx.get("book_settings"), dict) else {}
+    draft_cfg = settings_obj.get("draft") if isinstance(settings_obj.get("draft"), dict) else {}
+    min_chars = int(draft_cfg.get("min_chars") or 3000)
+    min_chars = max(800, min(12000, min_chars))
     character_facts = ctx.get("character_facts") if isinstance(ctx.get("character_facts"), list) else []
     timeline_facts = ctx.get("timeline_facts") if isinstance(ctx.get("timeline_facts"), list) else []
     open_foreshadows = ctx.get("open_foreshadows") if isinstance(ctx.get("open_foreshadows"), list) else []
     growth_milestones = ctx.get("growth_milestones") if isinstance(ctx.get("growth_milestones"), list) else []
+    chapter_outline = ctx.get("chapter_outline") if isinstance(ctx.get("chapter_outline"), dict) else {}
+    chapter_outline_nodes = chapter_outline.get("nodes") if isinstance(chapter_outline.get("nodes"), list) else []
     cfg_budget = ctx.get("orchestrator_context_budget") if isinstance(ctx.get("orchestrator_context_budget"), dict) else {}
+    memory_pack = ctx.get("writing_memory_pack") if isinstance(ctx.get("writing_memory_pack"), dict) else {}
+    memory_layers = memory_pack.get("memory_layers") if isinstance(memory_pack.get("memory_layers"), dict) else {}
+    memory_meta = memory_layers.get("meta") if isinstance(memory_layers.get("meta"), dict) else {}
+    memory_hot = memory_layers.get("hot") if isinstance(memory_layers.get("hot"), dict) else {}
+    memory_context_obj = memory_pack.get("context_assembled") if isinstance(memory_pack.get("context_assembled"), dict) else {}
+    memory_context_text = str(memory_context_obj.get("context_text") or "").strip()
+    if len(memory_context_text) > 9000:
+        memory_context_text = memory_context_text[:9000]
+    memory_instruction = str(memory_context_obj.get("instruction") or "").strip()
+    memory_token_est = int(memory_context_obj.get("token_est") or 0)
+    memory_session_key = str(memory_meta.get("session_key") or memory_hot.get("session_key") or "")
+    memory_hard_constraints = [
+        str(x).strip()
+        for x in (memory_context_obj.get("hard_constraints") if isinstance(memory_context_obj.get("hard_constraints"), list) else [])
+        if str(x).strip()
+    ][:16]
 
     def _truncate_items(items: list, max_items: int, max_chars: int) -> tuple[list, dict]:
         seq = [x for x in items if isinstance(x, dict)]
@@ -7802,16 +11959,19 @@ def _workflow_compose_prompt(ctx: dict, template_id: str) -> dict:
     t_items, t_chars = _budget_pair("timeline_facts", 8, 1000)
     f_items, f_chars = _budget_pair("open_foreshadows", 6, 900)
     g_items, g_chars = _budget_pair("growth_milestones", 6, 900)
+    o_items, o_chars = _budget_pair("chapter_outline_nodes", 8, 1200)
 
     char_compact, char_budget = _truncate_items(character_facts, c_items, c_chars)
     timeline_compact, timeline_budget = _truncate_items(timeline_facts, t_items, t_chars)
     foreshadow_compact, foreshadow_budget = _truncate_items(open_foreshadows, f_items, f_chars)
     growth_compact, growth_budget = _truncate_items(growth_milestones, g_items, g_chars)
+    outline_compact, outline_budget = _truncate_items(chapter_outline_nodes, o_items, o_chars)
     context_budget = {
         "character_facts": char_budget,
         "timeline_facts": timeline_budget,
         "open_foreshadows": foreshadow_budget,
         "growth_milestones": growth_budget,
+        "chapter_outline_nodes": outline_budget,
     }
     structure = ctx.get("structure") if isinstance(ctx.get("structure"), dict) else {}
     p_book = _clamp01(float(ctx.get("p_book") or structure.get("progress") or 0.0))
@@ -7820,6 +11980,8 @@ def _workflow_compose_prompt(ctx: dict, template_id: str) -> dict:
     final_tasks_intent = ctx.get("final_tasks_intent") if isinstance(ctx.get("final_tasks_intent"), list) else final_tasks
     pacer = ctx.get("pacer") if isinstance(ctx.get("pacer"), dict) else {}
     intent = str(ctx.get("intent_confirmed") or "延续章节目标，保持连贯")
+    if memory_instruction:
+        intent = memory_instruction
     recent_chapters = context.get("recent_chapters") if isinstance(context.get("recent_chapters"), list) else []
     recent_summary = "；".join(
         [
@@ -7851,9 +12013,13 @@ def _workflow_compose_prompt(ctx: dict, template_id: str) -> dict:
         "Use show-dont-tell and avoid meta commentary.",
         "If a task requires cost_shown, show cost on-screen.",
         "If a task requires choice_explicit, make choice explicit in dialogue or action.",
+        "Respect ChapterOutlineJSON node order and intent when writing scene progression.",
         "Do not copy any source text; use original wording.",
         "Output exactly two sections: CHAPTER_TEXT and EVENTS_JSON.",
+        f"CHAPTER_TEXT must be at least {min_chars} Chinese characters (excluding spaces).",
     ]
+    for item in memory_hard_constraints:
+        constraints.append(f"Memory hard constraint: {item}")
     schema = {
         "foreshadow_events": [{"foreshadow_id": "optional-uuid", "event_type": "seed|reinforce|payoff", "intensity": 1, "note": "short"}],
         "growth_events": [{"milestone_id": "optional-uuid", "action": "advance|achieve", "cost_shown": True, "choice_explicit": True, "note": "short"}],
@@ -7877,8 +12043,20 @@ def _workflow_compose_prompt(ctx: dict, template_id: str) -> dict:
     lines.append(f"- TimelineFactsJSON: {json.dumps(timeline_compact, ensure_ascii=False)}")
     lines.append(f"- OpenForeshadowsJSON: {json.dumps(foreshadow_compact, ensure_ascii=False)}")
     lines.append(f"- GrowthMilestonesJSON: {json.dumps(growth_compact, ensure_ascii=False)}")
+    lines.append(
+        f"- ChapterOutlineJSON: {json.dumps({'version': int(chapter_outline.get('version') or 0), 'chapter_title': str(chapter_outline.get('chapter_title') or ''), 'nodes': outline_compact}, ensure_ascii=False)}"
+    )
+    if memory_session_key:
+        lines.append(f"- MemorySessionKey: {memory_session_key}")
+    if memory_token_est > 0:
+        lines.append(f"- MemoryTokenEst: {memory_token_est}")
     lines.append("[/CONTEXT]")
     lines.append("")
+    if memory_context_text:
+        lines.append("[MEMORY_CONTEXT]")
+        lines.append(memory_context_text)
+        lines.append("[/MEMORY_CONTEXT]")
+        lines.append("")
     lines.append("[STRUCTURE_JSON]")
     lines.append(json.dumps(final_structure_json, ensure_ascii=False))
     lines.append("[/STRUCTURE_JSON]")
@@ -7906,6 +12084,7 @@ def _workflow_compose_prompt(ctx: dict, template_id: str) -> dict:
     lines.append("Return:")
     lines.append("A) CHAPTER_TEXT: chapter prose only.")
     lines.append("B) EVENTS_JSON: strict JSON object matching schema below.")
+    lines.append(f"C) CHAPTER_TEXT minimum length: {min_chars} Chinese characters.")
     lines.append("No extra keys. No trailing text after EVENTS_JSON.")
     lines.append(json.dumps(schema, ensure_ascii=False))
     lines.append("[/OUTPUT_FORMAT]")
@@ -7925,6 +12104,13 @@ def _workflow_compose_prompt(ctx: dict, template_id: str) -> dict:
                 "timeline_facts": timeline_compact,
                 "open_foreshadows": foreshadow_compact,
                 "growth_milestones": growth_compact,
+                "chapter_outline_nodes": outline_compact,
+            },
+            "memory": {
+                "enabled": bool(memory_context_text),
+                "session_key": memory_session_key,
+                "token_est": memory_token_est,
+                "hard_constraints": memory_hard_constraints,
             },
         },
     }
@@ -8957,6 +13143,227 @@ def _workflow_extract_chapter_and_events(text_value: str) -> tuple[str, dict]:
     return chapter_text, events
 
 
+async def _workflow_memory_pack_execute(ctx: dict, node_inputs: dict, db: AsyncSession) -> dict:
+    enabled = _workflow_parse_bool(
+        node_inputs.get("enabled"),
+        _workflow_parse_bool(ctx.get("memory_pack_enabled"), True),
+    )
+    if not enabled:
+        return {"memory_pack_status": {"ok": True, "enabled": False, "skipped": True, "reason": "disabled"}}
+
+    required = _workflow_parse_bool(
+        node_inputs.get("required"),
+        _workflow_parse_bool(ctx.get("memory_pack_required"), False),
+    )
+    book_id = str(ctx.get("book_id") or "").strip()
+    chapter_id = str(ctx.get("chapter_id") or "").strip()
+    chapter_no = _workflow_parse_int(ctx.get("chapter_no"), 0, 0, 100000)
+    if not book_id or (not chapter_id and chapter_no <= 0):
+        missing_reason = "book_id_or_chapter_missing"
+        if required:
+            raise RuntimeError(missing_reason)
+        return {
+            "memory_pack_status": {
+                "ok": False,
+                "enabled": True,
+                "required": False,
+                "skipped": True,
+                "reason": missing_reason,
+            }
+        }
+
+    session_key = str(node_inputs.get("session_key") or ctx.get("memory_session_key") or ctx.get("session_key") or "").strip()
+    if not session_key:
+        session_key = "draft_runner_v1"
+    task_type = str(node_inputs.get("task_type") or ctx.get("memory_task_type") or "write_chapter").strip().lower() or "write_chapter"
+    chapter_window = _workflow_parse_int(
+        node_inputs.get("chapter_window"),
+        _workflow_parse_int(ctx.get("memory_chapter_window"), 3, 1, 12),
+        1,
+        12,
+    )
+    evidence_top_k = _workflow_parse_int(
+        node_inputs.get("evidence_top_k"),
+        _workflow_parse_int(ctx.get("memory_evidence_top_k"), 24, 6, 80),
+        6,
+        80,
+    )
+    hard_constraints = [str(x).strip() for x in (ctx.get("memory_hard_constraints") if isinstance(ctx.get("memory_hard_constraints"), list) else []) if str(x).strip()]
+    final_task_types = [
+        str((x or {}).get("type") or (x or {}).get("task_type") or "").strip().lower()
+        for x in (ctx.get("final_tasks") if isinstance(ctx.get("final_tasks"), list) else [])
+        if isinstance(x, dict)
+    ]
+    final_task_types = [x for x in final_task_types if x]
+    conflict_card = await _workflow_load_memory_conflict_card(
+        db,
+        book_id=book_id,
+        chapter_id=chapter_id,
+        chapter_no=chapter_no,
+    )
+    chapter_goal = str(conflict_card.get("chapter_goal") or "").strip()
+    conflict_label = str(conflict_card.get("conflict_label") or conflict_card.get("conflict_type") or "").strip()
+    upgrade_method = str(conflict_card.get("upgrade_method") or "").strip()
+    cliffhanger = str(conflict_card.get("cliffhanger") or "").strip()
+    overdue_seeds = await _workflow_load_overdue_foreshadow_seeds(
+        db,
+        book_id=book_id,
+        chapter_no=chapter_no,
+        limit=8,
+    )
+    overdue_titles = [str((x or {}).get("title") or "").strip() for x in overdue_seeds if str((x or {}).get("title") or "").strip()]
+    focus_instruction = _workflow_build_memory_focus_instruction(
+        chapter_goal=chapter_goal,
+        conflict_label=conflict_label,
+        upgrade_method=upgrade_method,
+        cliffhanger=cliffhanger,
+        task_types=final_task_types,
+        overdue_titles=overdue_titles,
+    )
+    signal_constraints: list[str] = []
+    if chapter_goal:
+        signal_constraints.append(f"本章目标不得偏离：{chapter_goal}")
+    if conflict_label:
+        signal_constraints.append(f"冲突主轴必须保持：{conflict_label}")
+    if overdue_titles:
+        signal_constraints.append(f"到期伏笔需回收或明确延期：{'、'.join(overdue_titles[:4])}")
+    merged_constraints = hard_constraints + signal_constraints
+    query = str(node_inputs.get("query") or ctx.get("memory_query") or "").strip()
+    if not query:
+        query_parts = [
+            str(ctx.get("intent_confirmed") or "").strip(),
+            str(ctx.get("chapter_title") or "").strip(),
+            chapter_goal,
+            conflict_label,
+            " ".join([x for x in final_task_types[:6] if x]),
+            " ".join(overdue_titles[:4]),
+        ]
+        query = " ".join([x for x in query_parts if x]).strip()
+    task_instruction = str(node_inputs.get("task_instruction") or ctx.get("memory_task_instruction") or ctx.get("intent_confirmed") or "").strip()
+    if focus_instruction:
+        if task_instruction:
+            task_instruction = f"{task_instruction}；{focus_instruction}"
+        else:
+            task_instruction = focus_instruction
+    task_instruction = task_instruction[:360]
+    query = query[:260]
+
+    payload: dict[str, Any] = {
+        "session_key": session_key,
+        "task_type": task_type,
+        "query": query,
+        "task_instruction": task_instruction,
+        "chapter_window": chapter_window,
+        "evidence_top_k": evidence_top_k,
+        "hard_constraints": merged_constraints[:28],
+    }
+    if chapter_id:
+        payload["chapter_id"] = chapter_id
+    if chapter_no > 0:
+        payload["chapter_no"] = chapter_no
+    splitbook_id = str(node_inputs.get("splitbook_id") or ctx.get("splitbook_id") or "").strip()
+    if splitbook_id:
+        payload["splitbook_id"] = splitbook_id
+
+    try:
+        pack = await build_writing_memory_pack(db, book_id, payload)
+    except Exception as exc:
+        if required:
+            raise
+        return {
+            "memory_pack_status": {
+                "ok": False,
+                "enabled": True,
+                "required": False,
+                "degraded": True,
+                "error": str(exc),
+            }
+        }
+    return {
+        "writing_memory_pack": pack,
+        "memory_pack_status": {
+            "ok": bool(pack.get("ok")),
+            "enabled": True,
+            "required": required,
+            "checkpoint_id": str(pack.get("checkpoint_id") or ""),
+            "token_est": int(((pack.get("context_assembled") or {}).get("token_est") or 0)),
+            "signals": {
+                "chapter_goal": chapter_goal,
+                "conflict_label": conflict_label,
+                "overdue_foreshadow_titles": overdue_titles[:6],
+                "overdue_foreshadow_seeds": overdue_seeds[:8],
+                "task_types": final_task_types[:8],
+                "query": query,
+            },
+        },
+    }
+
+
+async def _workflow_memory_writeback_execute(ctx: dict, node_inputs: dict, db: AsyncSession) -> dict:
+    enabled = _workflow_parse_bool(
+        node_inputs.get("enabled"),
+        _workflow_parse_bool(ctx.get("memory_writeback_enabled"), True),
+    )
+    if not enabled:
+        return {"memory_writeback_report": {"ok": True, "enabled": False, "skipped": True, "reason": "disabled"}}
+    if bool(ctx.get("dry_run")):
+        return {"memory_writeback_report": {"ok": True, "enabled": True, "skipped": True, "reason": "dry_run"}}
+
+    required = _workflow_parse_bool(
+        node_inputs.get("required"),
+        _workflow_parse_bool(ctx.get("memory_writeback_required"), False),
+    )
+    book_id = str(ctx.get("book_id") or "").strip()
+    chapter_id = str(ctx.get("chapter_id") or "").strip()
+    chapter_no = _workflow_parse_int(ctx.get("chapter_no"), 0, 0, 100000)
+    llm_obj = ctx.get("llm_output") if isinstance(ctx.get("llm_output"), dict) else {}
+    chapter_text = str(llm_obj.get("chapter_text") or llm_obj.get("text") or "").strip()
+    if not book_id or not chapter_id or not chapter_text:
+        missing_reason = "book_id_chapter_id_or_content_missing"
+        if required:
+            raise RuntimeError(missing_reason)
+        return {
+            "memory_writeback_report": {
+                "ok": False,
+                "enabled": True,
+                "required": False,
+                "skipped": True,
+                "reason": missing_reason,
+            }
+        }
+
+    persist = _workflow_parse_bool(
+        node_inputs.get("persist"),
+        _workflow_parse_bool(ctx.get("memory_writeback_persist"), True),
+    )
+    session_key = str(node_inputs.get("session_key") or ctx.get("memory_session_key") or ctx.get("session_key") or "").strip()
+    if not session_key:
+        session_key = "draft_runner_v1"
+    payload = {
+        "session_key": session_key,
+        "chapter_id": chapter_id,
+        "chapter_no": chapter_no if chapter_no > 0 else None,
+        "chapter_title": str(ctx.get("chapter_title") or ""),
+        "content": chapter_text,
+        "writeback": persist,
+    }
+    try:
+        report = await validate_and_writeback_memory(db, book_id, payload)
+    except Exception as exc:
+        if required:
+            raise
+        return {
+            "memory_writeback_report": {
+                "ok": False,
+                "enabled": True,
+                "required": False,
+                "degraded": True,
+                "error": str(exc),
+            }
+        }
+    return {"memory_writeback_report": report}
+
+
 async def _workflow_llm_execute(ctx: dict, node_inputs: dict) -> dict:
     prompt = str(ctx.get("prompt") or "").strip()
     if bool(ctx.get("dry_run")) or bool(ctx.get("force_stub_llm")):
@@ -9028,7 +13435,11 @@ async def _workflow_llm_execute(ctx: dict, node_inputs: dict) -> dict:
         raise RuntimeError("PROMPT_EMPTY")
     model = str(node_inputs.get("model") or DEFAULT_LLM_MODEL)
     temperature = float(node_inputs.get("temperature") or 0.75)
+    settings_obj = ctx.get("book_settings") if isinstance(ctx.get("book_settings"), dict) else {}
+    draft_cfg = settings_obj.get("draft") if isinstance(settings_obj.get("draft"), dict) else {}
+    min_chars = max(800, min(12000, int(draft_cfg.get("min_chars") or 3000)))
     max_tokens = int(node_inputs.get("max_tokens") or 2200)
+    max_tokens = max(max_tokens, min(9000, int(min_chars * 2.2)))
     client = OllamaClient(settings.ollama_host)
     out = await client.chat(
         model=model,
@@ -9064,10 +13475,14 @@ async def _workflow_execute_node(node: dict, ctx: dict, db: AsyncSession) -> dic
     if ntype == "rule":
         fn_name = str(inputs.get("fn") or "")
         return _workflow_rule_execute(fn_name, ctx)
+    if ntype == "memory_pack":
+        return await _workflow_memory_pack_execute(ctx, inputs, db)
     if ntype == "compose":
         return _workflow_compose_prompt(ctx, str(inputs.get("template_id") or ""))
     if ntype == "llm":
         return await _workflow_llm_execute(ctx, inputs)
+    if ntype == "memory_writeback":
+        return await _workflow_memory_writeback_execute(ctx, inputs, db)
     raise RuntimeError("NODE_TYPE_NOT_SUPPORTED")
 
 
@@ -9274,6 +13689,8 @@ async def _workflow_execute_run(
         "phase": str(ctx.get("phase") or ""),
         "structure": ctx.get("structure") if isinstance(ctx.get("structure"), dict) else {},
         "commit_result": ctx.get("commit_result") if isinstance(ctx.get("commit_result"), dict) else {},
+        "memory_pack_status": ctx.get("memory_pack_status") if isinstance(ctx.get("memory_pack_status"), dict) else {},
+        "memory_writeback_report": ctx.get("memory_writeback_report") if isinstance(ctx.get("memory_writeback_report"), dict) else {},
         "quality_report": ctx.get("quality_report") if isinstance(ctx.get("quality_report"), dict) else {},
         "reader_state_next": ctx.get("reader_state_next") if isinstance(ctx.get("reader_state_next"), dict) else {},
     }
@@ -11593,6 +16010,347 @@ async def agent_diagnose_route(
     }
 
 
+def _agent_orchestrate_parse_uuid(raw_value: object, field_name: str, *, required: bool = False) -> str | None:
+    value = str(raw_value or "").strip()
+    if not value:
+        if required:
+            raise HTTPException(status_code=400, detail=f"{field_name} required")
+        return None
+    try:
+        return str(UUID(value))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"{field_name} invalid uuid") from exc
+
+
+def _agent_orchestrate_extract_code(exc: Exception) -> str:
+    if isinstance(exc, HTTPException):
+        return str(exc.detail or "AGENT_ORCHESTRATE_FAILED")
+    return str(exc or "AGENT_ORCHESTRATE_FAILED")
+
+
+async def _agent_orchestrate_build_plan(
+    db: AsyncSession,
+    *,
+    book_id: str,
+    chapter_id: str | None,
+    include_snapshot: bool = True,
+    include_style: bool = True,
+) -> dict:
+    diag = await agent_diagnose_route(
+        book_id=UUID(book_id),
+        chapter_id=UUID(chapter_id) if chapter_id else None,
+        db=db,
+    )
+    proposal = await agent_propose_route(
+        {
+            "book_id": book_id,
+            "chapter_id": chapter_id,
+        },
+        db=db,
+    )
+    actions = proposal.get("actions") if isinstance(proposal.get("actions"), list) else []
+    requires_confirmation = bool(proposal.get("requires_confirmation")) and len(actions) > 0
+    latest_snapshot = None
+    if include_snapshot:
+        await _ensure_asset_snapshot_tables(db)
+        snap_row = await db.execute(
+            text(
+                """
+                SELECT snapshot_id::text AS snapshot_id, snapshot_name, reason, tag, created_at
+                FROM asset_snapshot
+                WHERE book_id=CAST(:book_id AS uuid)
+                ORDER BY created_at DESC
+                LIMIT 1
+                """
+            ),
+            {"book_id": book_id},
+        )
+        latest_snapshot = dict(snap_row.mappings().first() or {}) or None
+    latest_style = None
+    if include_style:
+        latest_style = await get_latest_style_evolution(db, book_id=book_id)
+    diagnosis = diag.get("diagnosis") if isinstance(diag.get("diagnosis"), dict) else {}
+    alerts = diagnosis.get("alerts") if isinstance(diagnosis.get("alerts"), list) else []
+    warn_count = len([x for x in alerts if str((x or {}).get("severity") or "").lower() == "warn"])
+    return {
+        "plan_id": str(uuid4()),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "book_id": book_id,
+        "chapter_id": chapter_id,
+        "requires_confirmation": requires_confirmation,
+        "actions_count": len(actions),
+        "warn_count": warn_count,
+        "diagnosis": diagnosis,
+        "proposal": proposal,
+        "latest_snapshot": latest_snapshot,
+        "latest_style_evolution": latest_style,
+        "next_recommended_phase": "EXECUTE" if len(actions) > 0 else "VERIFY",
+    }
+
+
+@app.post("/v1/agent/orchestrate/plan")
+async def agent_orchestrate_plan_route(body: dict, db: AsyncSession = Depends(get_db)) -> dict:
+    bid = _agent_orchestrate_parse_uuid((body or {}).get("book_id"), "book_id", required=True)
+    cid = _agent_orchestrate_parse_uuid((body or {}).get("chapter_id"), "chapter_id", required=False)
+    include_snapshot = bool((body or {}).get("include_snapshot", True))
+    include_style = bool((body or {}).get("include_style", True))
+    plan = await _agent_orchestrate_build_plan(
+        db,
+        book_id=str(bid),
+        chapter_id=str(cid) if cid else None,
+        include_snapshot=include_snapshot,
+        include_style=include_style,
+    )
+    return {"ok": True, "phase": "PLAN", "plan": plan}
+
+
+@app.post("/v1/agent/orchestrate/step")
+async def agent_orchestrate_step_route(body: dict, db: AsyncSession = Depends(get_db)) -> dict:
+    data = body if isinstance(body, dict) else {}
+    bid = _agent_orchestrate_parse_uuid(data.get("book_id"), "book_id", required=True)
+    cid = _agent_orchestrate_parse_uuid(data.get("chapter_id"), "chapter_id", required=False)
+    phase = str(data.get("phase") or "").strip().upper()
+    if phase not in {"PLAN", "EXECUTE", "VERIFY", "COMMIT", "LEARN"}:
+        raise HTTPException(status_code=400, detail="AGENT_ORCHESTRATE_PHASE_INVALID")
+    dry_run = bool(data.get("dry_run", False))
+    trace_id = str(data.get("trace_id") or str(uuid4()))
+    book_id = str(bid)
+    chapter_id = str(cid) if cid else None
+
+    if phase == "PLAN":
+        out = await _agent_orchestrate_build_plan(
+            db,
+            book_id=book_id,
+            chapter_id=chapter_id,
+            include_snapshot=bool(data.get("include_snapshot", True)),
+            include_style=bool(data.get("include_style", True)),
+        )
+        return {"ok": True, "phase": phase, "trace_id": trace_id, "result": out}
+
+    if phase == "EXECUTE":
+        proposal = data.get("proposal") if isinstance(data.get("proposal"), dict) else {}
+        actions = proposal.get("actions") if isinstance(proposal.get("actions"), list) else []
+        if not actions:
+            fallback = await agent_propose_route({"book_id": book_id, "chapter_id": chapter_id}, db=db)
+            actions = fallback.get("actions") if isinstance(fallback.get("actions"), list) else []
+        if not actions:
+            return {
+                "ok": True,
+                "phase": phase,
+                "trace_id": trace_id,
+                "result": {"status": "skipped", "reason": "NO_ACTIONS"},
+            }
+        apply_result = await agent_apply_route(
+            {
+                "book_id": book_id,
+                "chapter_id": chapter_id,
+                "actions": actions,
+                "dry_run": dry_run,
+                "operator_note": str(data.get("operator_note") or f"agent_orchestrate:{trace_id}"),
+            },
+            db=db,
+        )
+        return {
+            "ok": True,
+            "phase": phase,
+            "trace_id": trace_id,
+            "result": {"status": "done", "actions_count": len(actions), "apply_result": apply_result},
+        }
+
+    if phase == "VERIFY":
+        diag = await agent_diagnose_route(
+            book_id=UUID(book_id),
+            chapter_id=UUID(chapter_id) if chapter_id else None,
+            db=db,
+        )
+        diagnosis = diag.get("diagnosis") if isinstance(diag.get("diagnosis"), dict) else {}
+        alerts = diagnosis.get("alerts") if isinstance(diagnosis.get("alerts"), list) else []
+        warn_count = len([x for x in alerts if str((x or {}).get("severity") or "").lower() == "warn"])
+        result = {
+            "status": "done",
+            "warn_count": warn_count,
+            "alerts_count": len(alerts),
+            "has_blocking_alert": warn_count > 0,
+            "diagnosis": diagnosis,
+        }
+        return {"ok": True, "phase": phase, "trace_id": trace_id, "result": result}
+
+    if phase == "COMMIT":
+        if dry_run:
+            return {
+                "ok": True,
+                "phase": phase,
+                "trace_id": trace_id,
+                "result": {"status": "skipped", "reason": "DRY_RUN"},
+            }
+        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        snapshot_name = str(data.get("snapshot_name") or "").strip() or f"总控提交快照 {now_str}"
+        reason = str(data.get("snapshot_reason") or "").strip() or "agent orchestrate commit"
+        tag = str(data.get("snapshot_tag") or "agent_orchestrate").strip() or "agent_orchestrate"
+        capture_result = await _capture_asset_snapshot(
+            db,
+            book_id=book_id,
+            snapshot_name=snapshot_name,
+            reason=reason,
+            tag=tag,
+        )
+        return {
+            "ok": True,
+            "phase": phase,
+            "trace_id": trace_id,
+            "result": {"status": "done", **capture_result},
+        }
+
+    if dry_run:
+        return {
+            "ok": True,
+            "phase": phase,
+            "trace_id": trace_id,
+            "result": {"status": "skipped", "reason": "DRY_RUN"},
+        }
+    style_cfg = data.get("style_evolution") if isinstance(data.get("style_evolution"), dict) else {}
+    learn_result = await evolve_book_style(
+        db,
+        book_id=book_id,
+        profile_id=(str(style_cfg.get("profile_id") or "").strip() or None),
+        sample_limit=int(style_cfg.get("sample_limit") or 24),
+        min_sample_count=int(style_cfg.get("min_sample_count") or 6),
+        alpha=float(style_cfg.get("alpha") or 0.58),
+        force=bool(style_cfg.get("force", False)),
+        sync_book_settings=bool(style_cfg.get("sync_book_settings", True)),
+        note=str(style_cfg.get("note") or "").strip() or f"agent orchestrate learn:{trace_id}",
+    )
+    return {"ok": True, "phase": phase, "trace_id": trace_id, "result": {"status": "done", "learn": learn_result}}
+
+
+@app.post("/v1/agent/orchestrate/run")
+async def agent_orchestrate_run_route(body: dict, db: AsyncSession = Depends(get_db)) -> dict:
+    data = body if isinstance(body, dict) else {}
+    bid = _agent_orchestrate_parse_uuid(data.get("book_id"), "book_id", required=True)
+    cid = _agent_orchestrate_parse_uuid(data.get("chapter_id"), "chapter_id", required=False)
+    book_id = str(bid)
+    chapter_id = str(cid) if cid else None
+    trace_id = str(uuid4())
+    dry_run = bool(data.get("dry_run", False))
+    do_execute = bool(data.get("do_execute", True))
+    do_verify = bool(data.get("do_verify", True))
+    do_commit = bool(data.get("do_commit", True))
+    do_learn = bool(data.get("do_learn", True))
+    confirm_execute = bool(data.get("confirm_execute", False))
+
+    phases: dict[str, dict] = {}
+    halted = False
+    ok = True
+
+    try:
+        plan = await _agent_orchestrate_build_plan(
+            db,
+            book_id=book_id,
+            chapter_id=chapter_id,
+            include_snapshot=bool(data.get("include_snapshot", True)),
+            include_style=bool(data.get("include_style", True)),
+        )
+        phases["PLAN"] = {"status": "done", "output": plan}
+    except Exception as exc:
+        code = _agent_orchestrate_extract_code(exc)
+        phases["PLAN"] = {"status": "failed", "reason": code}
+        return {"ok": False, "state": "failed", "trace_id": trace_id, "book_id": book_id, "chapter_id": chapter_id, "phases": phases}
+
+    if plan.get("requires_confirmation") and do_execute and not confirm_execute:
+        halted = True
+        ok = False
+        phases["EXECUTE"] = {"status": "halted", "reason": "AGENT_ORCHESTRATE_CONFIRM_REQUIRED"}
+    elif do_execute:
+        try:
+            execute_out = await agent_orchestrate_step_route(
+                {
+                    "book_id": book_id,
+                    "chapter_id": chapter_id,
+                    "phase": "EXECUTE",
+                    "dry_run": dry_run,
+                    "trace_id": trace_id,
+                    "proposal": plan.get("proposal"),
+                    "operator_note": str(data.get("operator_note") or f"agent_orchestrate:{trace_id}"),
+                },
+                db=db,
+            )
+            phases["EXECUTE"] = {"status": "done", "output": execute_out.get("result")}
+        except Exception as exc:
+            ok = False
+            phases["EXECUTE"] = {"status": "failed", "reason": _agent_orchestrate_extract_code(exc)}
+    else:
+        phases["EXECUTE"] = {"status": "skipped", "reason": "DISABLED"}
+
+    if do_verify and ok and not halted:
+        try:
+            verify_out = await agent_orchestrate_step_route(
+                {
+                    "book_id": book_id,
+                    "chapter_id": chapter_id,
+                    "phase": "VERIFY",
+                    "trace_id": trace_id,
+                },
+                db=db,
+            )
+            phases["VERIFY"] = {"status": "done", "output": verify_out.get("result")}
+        except Exception as exc:
+            ok = False
+            phases["VERIFY"] = {"status": "failed", "reason": _agent_orchestrate_extract_code(exc)}
+    else:
+        phases["VERIFY"] = {"status": "skipped", "reason": "DISABLED_OR_BLOCKED"}
+
+    if do_commit and ok and not halted:
+        try:
+            commit_out = await agent_orchestrate_step_route(
+                {
+                    "book_id": book_id,
+                    "phase": "COMMIT",
+                    "dry_run": dry_run,
+                    "trace_id": trace_id,
+                    "snapshot_name": data.get("snapshot_name"),
+                    "snapshot_reason": data.get("snapshot_reason"),
+                    "snapshot_tag": data.get("snapshot_tag"),
+                },
+                db=db,
+            )
+            phases["COMMIT"] = {"status": "done", "output": commit_out.get("result")}
+        except Exception as exc:
+            ok = False
+            phases["COMMIT"] = {"status": "failed", "reason": _agent_orchestrate_extract_code(exc)}
+    else:
+        phases["COMMIT"] = {"status": "skipped", "reason": "DISABLED_OR_BLOCKED"}
+
+    if do_learn and ok and not halted:
+        try:
+            learn_out = await agent_orchestrate_step_route(
+                {
+                    "book_id": book_id,
+                    "phase": "LEARN",
+                    "dry_run": dry_run,
+                    "trace_id": trace_id,
+                    "style_evolution": data.get("style_evolution"),
+                },
+                db=db,
+            )
+            phases["LEARN"] = {"status": "done", "output": learn_out.get("result")}
+        except Exception as exc:
+            ok = False
+            phases["LEARN"] = {"status": "failed", "reason": _agent_orchestrate_extract_code(exc)}
+    else:
+        phases["LEARN"] = {"status": "skipped", "reason": "DISABLED_OR_BLOCKED"}
+
+    final_state = "halted" if halted else ("completed" if ok else "failed")
+    return {
+        "ok": ok,
+        "state": final_state,
+        "trace_id": trace_id,
+        "book_id": book_id,
+        "chapter_id": chapter_id,
+        "dry_run": dry_run,
+        "phases": phases,
+    }
+
+
 @app.post("/v1/agent/propose")
 async def agent_propose_route(body: dict, db: AsyncSession = Depends(get_db)) -> dict:
     bid = str(body.get("book_id") or "").strip()
@@ -12797,6 +17555,395 @@ async def draft_get_route(draft_id: UUID, db: AsyncSession = Depends(get_db)) ->
     return {"ok": True, "item": dict(hit)}
 
 
+@app.get("/v1/chapters/{chapter_id}/latest_text_preview")
+async def chapter_latest_text_preview_route(chapter_id: UUID, db: AsyncSession = Depends(get_db)) -> dict:
+    await _ensure_workflow_tables(db)
+    row_ch = await db.execute(
+        text("SELECT chapter_id::text AS chapter_id FROM chapter WHERE chapter_id=CAST(:chapter_id AS uuid) LIMIT 1"),
+        {"chapter_id": str(chapter_id)},
+    )
+    ch = row_ch.mappings().first()
+    if not ch:
+        raise HTTPException(status_code=404, detail="CHAPTER_NOT_FOUND")
+
+    row_draft = await db.execute(
+        text(
+            """
+            SELECT
+              d.draft_id::text AS draft_id,
+              d.text,
+              d.created_at
+            FROM chapter c
+            LEFT JOIN chapter_selected cs ON cs.chapter_id=c.chapter_id
+            LEFT JOIN chapter_draft d ON d.draft_id=COALESCE(cs.selected_draft_id, c.active_draft_id)
+            WHERE c.chapter_id=CAST(:chapter_id AS uuid)
+            LIMIT 1
+            """
+        ),
+        {"chapter_id": str(chapter_id)},
+    )
+    d = row_draft.mappings().first()
+    draft_text = str((d or {}).get("text") or "").strip()
+    if draft_text:
+        return {
+            "ok": True,
+            "chapter_id": str(chapter_id),
+            "source": "draft",
+            "draft_id": str((d or {}).get("draft_id") or ""),
+            "text": draft_text,
+            "created_at": (d or {}).get("created_at"),
+        }
+
+    row_tv = await db.execute(
+        text(
+            """
+            SELECT text_ver_id::text AS text_ver_id, content, created_at
+            FROM chapter_text_version
+            WHERE chapter_id=CAST(:chapter_id AS uuid)
+            ORDER BY created_at DESC
+            LIMIT 1
+            """
+        ),
+        {"chapter_id": str(chapter_id)},
+    )
+    tv = row_tv.mappings().first()
+    if not tv:
+        raise HTTPException(status_code=404, detail="TEXT_VERSION_NOT_FOUND")
+    text_value = str((tv or {}).get("content") or "").strip()
+    if not text_value:
+        raise HTTPException(status_code=404, detail="TEXT_VERSION_CONTENT_EMPTY")
+    return {
+        "ok": True,
+        "chapter_id": str(chapter_id),
+        "source": "text_version",
+        "text_ver_id": str((tv or {}).get("text_ver_id") or ""),
+        "text": text_value,
+        "created_at": (tv or {}).get("created_at"),
+    }
+
+
+@app.post("/v1/chapters/{chapter_id}/manual_import")
+async def chapter_manual_import_route(chapter_id: UUID, body: dict, db: AsyncSession = Depends(get_db)) -> dict:
+    await _ensure_workflow_tables(db)
+    chapter_id_text = str(chapter_id)
+    row_ch = await db.execute(
+        text(
+            """
+            SELECT chapter_id::text AS chapter_id, book_id::text AS book_id, "order" AS chapter_no, title
+            FROM chapter
+            WHERE chapter_id=CAST(:chapter_id AS uuid)
+            LIMIT 1
+            """
+        ),
+        {"chapter_id": chapter_id_text},
+    )
+    chapter_hit = row_ch.mappings().first()
+    if not chapter_hit:
+        raise HTTPException(status_code=404, detail="CHAPTER_NOT_FOUND")
+
+    content = str((body or {}).get("content") or (body or {}).get("text") or "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="CHAPTER_IMPORT_TEXT_EMPTY")
+    note = str((body or {}).get("note") or "manual_import").strip() or "manual_import"
+    source = str((body or {}).get("source") or "manual_import").strip() or "manual_import"
+    selected_by = str((body or {}).get("selected_by") or "user").strip() or "user"
+
+    book_id_text = str(chapter_hit.get("book_id") or "")
+    run_id = str(uuid4())
+    idem_key = f"manual_import:{chapter_id_text}:{run_id}"
+    now = datetime.now(timezone.utc)
+    await db.execute(
+        text(
+            """
+            INSERT INTO workflow_run(
+              run_id, workflow_id, workflow_version, book_id, chapter_id, idempotency_key,
+              status, started_at, ended_at, ctx_snapshot, meta
+            )
+            VALUES (
+              CAST(:run_id AS uuid), 'manual_import_v1', 1, CAST(:book_id AS uuid), CAST(:chapter_id AS uuid), :idempotency_key,
+              'succeeded', :started_at, :ended_at, CAST(:ctx_snapshot AS jsonb), CAST(:meta AS jsonb)
+            )
+            """
+        ),
+        {
+            "run_id": run_id,
+            "book_id": book_id_text,
+            "chapter_id": chapter_id_text,
+            "idempotency_key": idem_key,
+            "started_at": now,
+            "ended_at": now,
+            "ctx_snapshot": json.dumps({"chapter_id": chapter_id_text, "mode": "manual_import"}, ensure_ascii=False),
+            "meta": json.dumps({"mode": "manual_import", "note": note}, ensure_ascii=False),
+        },
+    )
+
+    ins_draft = await db.execute(
+        text(
+            """
+            INSERT INTO chapter_draft(book_id, chapter_id, run_id, variant, branch, text, is_candidate, is_selected)
+            VALUES (
+              CAST(:book_id AS uuid), CAST(:chapter_id AS uuid), CAST(:run_id AS uuid),
+              :variant, :branch, :text, true, true
+            )
+            RETURNING draft_id::text AS draft_id, created_at
+            """
+        ),
+        {
+            "book_id": book_id_text,
+            "chapter_id": chapter_id_text,
+            "run_id": run_id,
+            "variant": "MANUAL",
+            "branch": "MANUAL",
+            "text": content,
+        },
+    )
+    draft_row = ins_draft.mappings().first() or {}
+    draft_id = str(draft_row.get("draft_id") or "")
+
+    await db.execute(
+        text(
+            """
+            INSERT INTO chapter_selected(chapter_id, selected_draft_id, selected_branch, selected_by, selected_reason)
+            VALUES (CAST(:chapter_id AS uuid), CAST(:draft_id AS uuid), 'MANUAL', :selected_by, :selected_reason)
+            ON CONFLICT (chapter_id) DO UPDATE SET
+              selected_draft_id=EXCLUDED.selected_draft_id,
+              selected_branch=EXCLUDED.selected_branch,
+              selected_by=EXCLUDED.selected_by,
+              selected_reason=EXCLUDED.selected_reason,
+              selected_at=now()
+            """
+        ),
+        {
+            "chapter_id": chapter_id_text,
+            "draft_id": draft_id,
+            "selected_by": selected_by,
+            "selected_reason": "manual_import",
+        },
+    )
+    await db.execute(
+        text("UPDATE chapter SET active_draft_id=CAST(:draft_id AS uuid) WHERE chapter_id=CAST(:chapter_id AS uuid)"),
+        {"chapter_id": chapter_id_text, "draft_id": draft_id},
+    )
+    await db.execute(
+        text(
+            """
+            UPDATE chapter_draft
+            SET is_selected=(draft_id=CAST(:draft_id AS uuid)),
+                selected_at=CASE WHEN draft_id=CAST(:draft_id AS uuid) THEN now() ELSE selected_at END
+            WHERE chapter_id=CAST(:chapter_id AS uuid)
+            """
+        ),
+        {"chapter_id": chapter_id_text, "draft_id": draft_id},
+    )
+
+    ins_text_ver = await db.execute(
+        text(
+            """
+            INSERT INTO chapter_text_version(chapter_id, outline_version, source, content, note, meta)
+            VALUES (
+              CAST(:chapter_id AS uuid), 1, :source, :content, :note, CAST(:meta AS jsonb)
+            )
+            RETURNING text_ver_id::text AS text_ver_id, created_at
+            """
+        ),
+        {
+            "chapter_id": chapter_id_text,
+            "source": source,
+            "content": content,
+            "note": note,
+            "meta": json.dumps(
+                {
+                    "manual_import": True,
+                    "selected_by": selected_by,
+                    "run_id": run_id,
+                    "draft_id": draft_id,
+                    "imported_at": now.isoformat(),
+                },
+                ensure_ascii=False,
+            ),
+        },
+    )
+    text_ver_row = ins_text_ver.mappings().first() or {}
+    text_ver_id = str(text_ver_row.get("text_ver_id") or "")
+
+    await db.commit()
+    return {
+        "ok": True,
+        "book_id": book_id_text,
+        "chapter_id": chapter_id_text,
+        "chapter_no": int(chapter_hit.get("chapter_no") or 0),
+        "chapter_title": str(chapter_hit.get("title") or ""),
+        "mode": "strong_override",
+        "run_id": run_id,
+        "draft": {
+            "draft_id": draft_id,
+            "branch": "MANUAL",
+            "selected": True,
+            "active": True,
+            "created_at": draft_row.get("created_at"),
+        },
+        "text_version": {
+            "text_ver_id": text_ver_id,
+            "source": source,
+            "created_at": text_ver_row.get("created_at"),
+        },
+    }
+
+
+@app.delete("/v1/drafts/{draft_id}")
+async def draft_delete_route(draft_id: UUID, db: AsyncSession = Depends(get_db)) -> dict:
+    await _ensure_workflow_tables(db)
+    draft_id_str = str(draft_id)
+    row = await db.execute(
+        text(
+            """
+            SELECT
+              d.draft_id::text AS draft_id,
+              d.book_id::text AS book_id,
+              d.chapter_id::text AS chapter_id,
+              d.branch,
+              d.created_at,
+              c.active_draft_id::text AS active_draft_id,
+              cs.selected_draft_id::text AS selected_draft_id
+            FROM chapter_draft d
+            JOIN chapter c ON c.chapter_id=d.chapter_id
+            LEFT JOIN chapter_selected cs ON cs.chapter_id=d.chapter_id
+            WHERE d.draft_id=CAST(:draft_id AS uuid)
+            LIMIT 1
+            """
+        ),
+        {"draft_id": draft_id_str},
+    )
+    hit = row.mappings().first()
+    if not hit:
+        raise HTTPException(status_code=404, detail="DRAFT_NOT_FOUND")
+
+    chapter_id = str(hit.get("chapter_id") or "")
+    selected_draft_id = str(hit.get("selected_draft_id") or "")
+    active_draft_id = str(hit.get("active_draft_id") or "")
+    need_switch_selected = bool(selected_draft_id and selected_draft_id == draft_id_str)
+    need_switch_active = bool(active_draft_id and active_draft_id == draft_id_str)
+
+    count_row = await db.execute(
+        text("SELECT COUNT(*)::int AS n FROM chapter_draft WHERE chapter_id=CAST(:chapter_id AS uuid)"),
+        {"chapter_id": chapter_id},
+    )
+    total_drafts = int((count_row.mappings().first() or {}).get("n") or 0)
+    if total_drafts <= 1:
+        raise HTTPException(status_code=400, detail="DRAFT_DELETE_LAST_FORBIDDEN")
+
+    replacement_id = ""
+    replacement_branch = ""
+
+    async def _pick_specific(candidate_id: str) -> tuple[str, str]:
+        cid = str(candidate_id or "").strip()
+        if not cid or cid == draft_id_str:
+            return ("", "")
+        c_row = await db.execute(
+            text(
+                """
+                SELECT draft_id::text AS draft_id, branch
+                FROM chapter_draft
+                WHERE chapter_id=CAST(:chapter_id AS uuid)
+                  AND draft_id=CAST(:draft_id AS uuid)
+                LIMIT 1
+                """
+            ),
+            {"chapter_id": chapter_id, "draft_id": cid},
+        )
+        c_hit = c_row.mappings().first()
+        if not c_hit:
+            return ("", "")
+        return (str(c_hit.get("draft_id") or ""), str(c_hit.get("branch") or "A"))
+
+    if need_switch_selected:
+        replacement_id, replacement_branch = await _pick_specific(active_draft_id)
+    if not replacement_id and need_switch_active:
+        replacement_id, replacement_branch = await _pick_specific(selected_draft_id)
+    if not replacement_id and (need_switch_selected or need_switch_active):
+        rep_row = await db.execute(
+            text(
+                """
+                SELECT draft_id::text AS draft_id, branch
+                FROM chapter_draft
+                WHERE chapter_id=CAST(:chapter_id AS uuid)
+                  AND draft_id<>CAST(:draft_id AS uuid)
+                ORDER BY
+                  CASE WHEN is_selected THEN 0 ELSE 1 END,
+                  created_at DESC
+                LIMIT 1
+                """
+            ),
+            {"chapter_id": chapter_id, "draft_id": draft_id_str},
+        )
+        rep_hit = rep_row.mappings().first()
+        replacement_id = str((rep_hit or {}).get("draft_id") or "")
+        replacement_branch = str((rep_hit or {}).get("branch") or "A")
+
+    if (need_switch_selected or need_switch_active) and not replacement_id:
+        raise HTTPException(status_code=400, detail="DRAFT_DELETE_NO_REPLACEMENT")
+
+    switched = False
+    if need_switch_selected and replacement_id:
+        await db.execute(
+            text(
+                """
+                INSERT INTO chapter_selected(chapter_id, selected_draft_id, selected_branch, selected_by, selected_reason)
+                VALUES (CAST(:chapter_id AS uuid), CAST(:draft_id AS uuid), :branch, 'system', 'auto_switch_before_delete')
+                ON CONFLICT(chapter_id) DO UPDATE SET
+                  selected_draft_id=EXCLUDED.selected_draft_id,
+                  selected_branch=EXCLUDED.selected_branch,
+                  selected_by=EXCLUDED.selected_by,
+                  selected_reason=EXCLUDED.selected_reason,
+                  selected_at=now()
+                """
+            ),
+            {"chapter_id": chapter_id, "draft_id": replacement_id, "branch": replacement_branch or "A"},
+        )
+        await db.execute(
+            text(
+                """
+                UPDATE chapter_draft
+                SET is_selected=(draft_id=CAST(:draft_id AS uuid)),
+                    selected_at=CASE WHEN draft_id=CAST(:draft_id AS uuid) THEN now() ELSE selected_at END
+                WHERE chapter_id=CAST(:chapter_id AS uuid)
+                """
+            ),
+            {"chapter_id": chapter_id, "draft_id": replacement_id},
+        )
+        switched = True
+
+    if need_switch_active and replacement_id:
+        await db.execute(
+            text("UPDATE chapter SET active_draft_id=CAST(:draft_id AS uuid) WHERE chapter_id=CAST(:chapter_id AS uuid)"),
+            {"chapter_id": chapter_id, "draft_id": replacement_id},
+        )
+        switched = True
+
+    del_row = await db.execute(
+        text(
+            """
+            DELETE FROM chapter_draft
+            WHERE draft_id=CAST(:draft_id AS uuid)
+            RETURNING draft_id::text AS draft_id, chapter_id::text AS chapter_id, book_id::text AS book_id, branch
+            """
+        ),
+        {"draft_id": draft_id_str},
+    )
+    deleted = del_row.mappings().first()
+    if not deleted:
+        await db.rollback()
+        raise HTTPException(status_code=404, detail="DRAFT_NOT_FOUND")
+    await db.commit()
+    return {
+        "ok": True,
+        "deleted": dict(deleted),
+        "switched": switched,
+        "replacement_draft_id": replacement_id or None,
+        "replacement_branch": replacement_branch or None,
+    }
+
+
 @app.post("/v1/chapters/{chapter_id}/drafts/{draft_id}/activate")
 async def chapter_draft_activate_route(chapter_id: UUID, draft_id: UUID, db: AsyncSession = Depends(get_db)) -> dict:
     await _ensure_workflow_tables(db)
@@ -12879,6 +18026,25 @@ async def draft_run_route(body: dict, db: AsyncSession = Depends(get_db)) -> dic
         "intent_confirmed": intent_confirmed,
         "force_stub_llm": force_stub_llm,
     }
+    passthrough_keys = {
+        "memory_pack_enabled",
+        "memory_pack_required",
+        "memory_session_key",
+        "memory_task_type",
+        "memory_task_instruction",
+        "memory_query",
+        "memory_chapter_window",
+        "memory_evidence_top_k",
+        "memory_writeback_enabled",
+        "memory_writeback_persist",
+        "memory_writeback_required",
+        "splitbook_id",
+    }
+    if isinstance(body.get("memory_hard_constraints"), list):
+        input_ctx["memory_hard_constraints"] = body.get("memory_hard_constraints")
+    for key in passthrough_keys:
+        if key in body:
+            input_ctx[key] = body.get(key)
     if chapter_id:
         input_ctx["chapter_id"] = chapter_id
     if chapter_no_raw is not None:
@@ -12915,6 +18081,458 @@ async def draft_run_route(body: dict, db: AsyncSession = Depends(get_db)) -> dic
         "reused": bool(result.get("reused", False)),
         "output": result.get("output") if isinstance(result.get("output"), dict) else {},
         "input": input_ctx,
+    }
+
+
+async def _closed_loop_noop_progress(*_args, **_kwargs) -> None:
+    return None
+
+
+async def _closed_loop_noop_log(*_args, **_kwargs) -> None:
+    return None
+
+
+def _visible_text_len(text: str) -> int:
+    return len(re.sub(r"\s+", "", str(text or "")))
+
+
+async def _ensure_closed_loop_min_length(
+    db: AsyncSession,
+    *,
+    book_id: str,
+    chapter_id: str,
+    chapter_no: int,
+    chapter_title: str,
+    commit_result: dict[str, Any],
+    min_chars: int = 3000,
+) -> dict[str, Any]:
+    out: dict[str, Any] = {
+        "ok": True,
+        "applied": False,
+        "min_chars": int(min_chars),
+        "before_chars": 0,
+        "after_chars": 0,
+    }
+    text_ver_id = str(commit_result.get("text_ver_id") or "").strip()
+    if not text_ver_id:
+        out["ok"] = False
+        out["reason"] = "text_ver_missing"
+        return out
+    row = await db.execute(
+        text(
+            """
+            SELECT content
+            FROM chapter_text_version
+            WHERE text_ver_id=CAST(:text_ver_id AS uuid)
+            LIMIT 1
+            """
+        ),
+        {"text_ver_id": text_ver_id},
+    )
+    hit = row.mappings().first()
+    source_text = str((hit or {}).get("content") or "").strip()
+    before_chars = _visible_text_len(source_text)
+    out["before_chars"] = before_chars
+    if before_chars >= min_chars:
+        out["after_chars"] = before_chars
+        out["reason"] = "already_enough"
+        return out
+
+    try:
+        chapter_outline = await get_outline_detail_service(db, chapter_id, None)
+    except RuntimeError:
+        chapter_outline = {}
+    outline_detail = chapter_outline.get("outline_detail") if isinstance(chapter_outline.get("outline_detail"), dict) else {}
+    nodes = outline_detail.get("nodes") if isinstance(outline_detail.get("nodes"), list) else []
+    brief = await get_book_settings(db, book_id) or {}
+    writing_brief = brief.get("writing_brief") if isinstance(brief.get("writing_brief"), dict) else {}
+    prompt_payload = {
+        "chapter_no": chapter_no,
+        "chapter_title": chapter_title,
+        "min_chars": min_chars,
+        "writing_brief": _build_master_outline_brief_payload(writing_brief),
+        "outline_nodes": nodes[:10],
+        "source_text": source_text[:9000],
+        "rules": [
+            "保持原有剧情事实与时间线",
+            "仅扩充场景细节、动作、心理、对话",
+            "不得删减关键冲突与章末钩子",
+        ],
+    }
+    user_prompt = (
+        "请将以下章节正文扩写到指定长度，返回纯正文文本，不要任何解释。\n"
+        "要求：保持剧情事实不变，增强可读性与细节，确保章节完整。\n"
+        f"输入：{json.dumps(prompt_payload, ensure_ascii=False)}"
+    )
+    client = OllamaClient(settings.ollama_host)
+    try:
+        llm_out = await client.chat(
+            model=DEFAULT_LLM_MODEL,
+            user=user_prompt,
+            system="你是网文写作助手。只输出章节正文。",
+            temperature=0.55,
+            max_tokens=max(3600, min(9000, int(min_chars * 2.4))),
+            timeout_s=240,
+            retries=1,
+            meta={"route": "closed_loop_expand_text", "chapter_id": chapter_id},
+        )
+    except Exception as exc:
+        out["ok"] = False
+        out["reason"] = f"expand_failed:{str(exc)[:120]}"
+        out["after_chars"] = before_chars
+        return out
+    expanded = str(llm_out.get("text") or "").strip()
+    after_chars = _visible_text_len(expanded)
+    out["after_chars"] = after_chars
+    if after_chars <= before_chars:
+        out["reason"] = "expand_no_growth"
+        return out
+    await db.execute(
+        text(
+            """
+            UPDATE chapter_text_version
+            SET content=:content,
+                meta=COALESCE(meta, '{}'::jsonb) || CAST(:meta_patch AS jsonb)
+            WHERE text_ver_id=CAST(:text_ver_id AS uuid)
+            """
+        ),
+        {
+            "text_ver_id": text_ver_id,
+            "content": expanded,
+            "meta_patch": json.dumps(
+                {
+                    "expanded_to_min_chars": min_chars,
+                    "expand_before_chars": before_chars,
+                    "expand_after_chars": after_chars,
+                    "expanded_at": datetime.now(timezone.utc).isoformat(),
+                },
+                ensure_ascii=False,
+            ),
+        },
+    )
+    await db.commit()
+    out["applied"] = True
+    out["reason"] = "expanded"
+    return out
+
+
+async def _resolve_closed_loop_chapter(
+    db: AsyncSession,
+    *,
+    book_id: str | None,
+    chapter_id: str | None,
+    chapter_no: int | None,
+) -> dict:
+    if chapter_id:
+        row = await db.execute(
+            text(
+                """
+                SELECT chapter_id::text AS chapter_id, book_id::text AS book_id, "order" AS chapter_no, title
+                FROM chapter
+                WHERE chapter_id=CAST(:chapter_id AS uuid)
+                  AND (:book_id = '' OR book_id=CAST(:book_id AS uuid))
+                LIMIT 1
+                """
+            ),
+            {"chapter_id": chapter_id, "book_id": str(book_id or "")},
+        )
+        hit = row.mappings().first()
+        if not hit:
+            raise RuntimeError("CHAPTER_NOT_FOUND")
+        return dict(hit)
+    if not book_id or chapter_no is None:
+        raise RuntimeError("BOOK_ID_AND_CHAPTER_REQUIRED")
+    row = await db.execute(
+        text(
+            """
+            SELECT chapter_id::text AS chapter_id, book_id::text AS book_id, "order" AS chapter_no, title
+            FROM chapter
+            WHERE book_id=CAST(:book_id AS uuid) AND "order"=:chapter_no
+            LIMIT 1
+            """
+        ),
+        {"book_id": book_id, "chapter_no": int(chapter_no)},
+    )
+    hit = row.mappings().first()
+    if not hit:
+        raise RuntimeError("CHAPTER_NOT_FOUND")
+    return dict(hit)
+
+
+@app.post("/v1/engine/closed_loop/run")
+async def engine_closed_loop_run_route(body: dict, db: AsyncSession = Depends(get_db)) -> dict:
+    await _ensure_workflow_tables(db)
+    book_id_raw = str((body or {}).get("book_id") or "").strip() or None
+    chapter_id_raw = str((body or {}).get("chapter_id") or "").strip() or None
+    chapter_no_raw = (body or {}).get("chapter_no")
+    chapter_no: int | None
+    if chapter_no_raw is None or str(chapter_no_raw).strip() == "":
+        chapter_no = None
+    else:
+        try:
+            chapter_no = int(chapter_no_raw)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="chapter_no must be int") from exc
+    try:
+        chapter_hit = await _resolve_closed_loop_chapter(
+            db,
+            book_id=book_id_raw,
+            chapter_id=chapter_id_raw,
+            chapter_no=chapter_no,
+        )
+    except RuntimeError as exc:
+        code = str(exc)
+        if code == "CHAPTER_NOT_FOUND":
+            raise HTTPException(status_code=404, detail=code) from exc
+        raise HTTPException(status_code=400, detail=code) from exc
+
+    book_id = str(chapter_hit.get("book_id") or "")
+    chapter_id = str(chapter_hit.get("chapter_id") or "")
+    chapter_no_final = int(chapter_hit.get("chapter_no") or 0)
+
+    dry_run = bool((body or {}).get("dry_run", False))
+    reuse_if_exists = bool((body or {}).get("reuse_if_exists", True))
+    force_stub_llm = bool((body or {}).get("force_stub_llm", False))
+    intent_confirmed = str((body or {}).get("intent_confirmed") or "闭环写作执行").strip() or "闭环写作执行"
+    fail_on_preflight_fail = bool((body or {}).get("fail_on_preflight_fail", False))
+    evolve_style = bool((body or {}).get("evolve_style", True))
+    style_evolution_cfg = (body or {}).get("style_evolution") if isinstance((body or {}).get("style_evolution"), dict) else {}
+
+    draft_payload: dict[str, Any] = {
+        "book_id": book_id,
+        "chapter_id": chapter_id,
+        "chapter_no": chapter_no_final,
+        "intent_confirmed": intent_confirmed,
+        "dry_run": dry_run,
+        "reuse_if_exists": reuse_if_exists,
+        "force_stub_llm": force_stub_llm,
+    }
+    if str((body or {}).get("idempotency_key") or "").strip():
+        draft_payload["idempotency_key"] = str((body or {}).get("idempotency_key")).strip()
+
+    draft_result = await draft_run_route(draft_payload, db)
+    run_id = str(draft_result.get("run_id") or "")
+    commit_result = ((draft_result.get("output") or {}).get("commit_result") if isinstance(draft_result.get("output"), dict) else {}) or {}
+    if run_id and not commit_result:
+        run_row = await db.execute(
+            text("SELECT meta FROM workflow_run WHERE run_id=CAST(:run_id AS uuid) LIMIT 1"),
+            {"run_id": run_id},
+        )
+        run_hit = run_row.mappings().first()
+        meta = run_hit.get("meta") if run_hit and isinstance(run_hit.get("meta"), dict) else {}
+        commit_result = meta.get("commit_result") if isinstance(meta.get("commit_result"), dict) else {}
+
+    book_settings = await get_book_settings(db, book_id) or {}
+    draft_cfg = book_settings.get("draft") if isinstance(book_settings.get("draft"), dict) else {}
+    min_chars = int((body or {}).get("min_chars") or draft_cfg.get("min_chars") or 3000)
+    min_chars = max(800, min(12000, min_chars))
+    length_guard_result: dict[str, Any] = {"ok": True, "skipped": True, "reason": "disabled"}
+    if bool(draft_result.get("ok")) and not dry_run and min_chars > 0:
+        length_guard_result = await _ensure_closed_loop_min_length(
+            db,
+            book_id=book_id,
+            chapter_id=chapter_id,
+            chapter_no=chapter_no_final,
+            chapter_title=str(chapter_hit.get("title") or chapter_hit.get("chapter_title") or f"第{chapter_no_final}章"),
+            commit_result=commit_result if isinstance(commit_result, dict) else {},
+            min_chars=min_chars,
+        )
+        if length_guard_result.get("applied"):
+            commit_result = {**(commit_result if isinstance(commit_result, dict) else {}), "min_chars_guard_applied": True}
+            if isinstance(draft_result.get("output"), dict):
+                draft_result["output"]["commit_result"] = commit_result
+
+    do_writeback = bool((body or {}).get("do_writeback", True))
+    writeback_input = (body or {}).get("writeback") if isinstance((body or {}).get("writeback"), dict) else {}
+    writeback_cfg = {
+        "update_outline": bool(writeback_input.get("update_outline", True)),
+        "extract_facts": bool(writeback_input.get("extract_facts", True)),
+        "extract_growth": bool(writeback_input.get("extract_growth", True)),
+        "extract_timeline": bool(writeback_input.get("extract_timeline", True)),
+        "extract_new_materials": bool(writeback_input.get("extract_new_materials", True)),
+        "run_eval": bool(writeback_input.get("run_eval", True)),
+    }
+    writeback_result: dict[str, Any] = {"ok": True, "skipped": True, "reason": "disabled"}
+    selected_draft_id = str(commit_result.get("selected_draft_id") or "")
+    if do_writeback and not dry_run:
+        text_ver_id = str(commit_result.get("text_ver_id") or "").strip()
+        text_content = str((body or {}).get("text_content") or "").strip()
+        if not text_ver_id and not text_content:
+            row_text = await db.execute(
+                text(
+                    """
+                    SELECT d.draft_id::text AS draft_id, d.text
+                    FROM chapter c
+                    LEFT JOIN chapter_selected cs ON cs.chapter_id=c.chapter_id
+                    LEFT JOIN chapter_draft d ON d.draft_id=COALESCE(cs.selected_draft_id, c.active_draft_id)
+                    WHERE c.chapter_id=CAST(:chapter_id AS uuid)
+                    LIMIT 1
+                    """
+                ),
+                {"chapter_id": chapter_id},
+            )
+            hit = row_text.mappings().first()
+            if hit:
+                selected_draft_id = selected_draft_id or str(hit.get("draft_id") or "")
+                text_content = text_content or str(hit.get("text") or "").strip()
+        if not text_ver_id and not text_content:
+            writeback_result = {
+                "ok": True,
+                "skipped": True,
+                "reason": "text_not_found",
+                "warning": "WRITEBACK_TEXT_NOT_FOUND",
+            }
+        else:
+            commit_payload = {
+                "book_id": book_id,
+                "chapter_id": chapter_id,
+                "commit_txn_id": str(uuid4()),
+                "text_ver_id": text_ver_id or None,
+                "text_content": text_content or None,
+                "writeback": writeback_cfg,
+                "skip_save_text_version": bool(text_ver_id),
+                "outline_version": (body or {}).get("outline_version"),
+            }
+            writeback_data = await run_commit_draft_job(
+                db,
+                commit_payload,
+                on_progress=_closed_loop_noop_progress,
+                on_log=_closed_loop_noop_log,
+            )
+            writeback_result = {"ok": True, "skipped": False, "result": writeback_data}
+    elif do_writeback and dry_run:
+        writeback_result = {"ok": True, "skipped": True, "reason": "dry_run"}
+
+    run_preflight = bool((body or {}).get("run_preflight", True))
+    preflight_result: dict[str, Any] = {"ok": True, "skipped": True, "reason": "disabled"}
+    if run_preflight:
+        volume_id_raw = str((body or {}).get("volume_id") or "").strip()
+        volume_hit: dict | None = None
+        if volume_id_raw:
+            vr = await db.execute(
+                text(
+                    """
+                    SELECT volume_id::text AS volume_id, volume_no, title
+                    FROM volume
+                    WHERE volume_id=CAST(:volume_id AS uuid) AND book_id=CAST(:book_id AS uuid)
+                    LIMIT 1
+                    """
+                ),
+                {"volume_id": volume_id_raw, "book_id": book_id},
+            )
+            volume_hit = dict(vr.mappings().first() or {}) if vr else None
+        if not volume_hit:
+            volume_hit = await _find_volume_for_chapter(db, book_id=book_id, chapter_no=chapter_no_final)
+        if not volume_hit:
+            preflight_result = {"ok": True, "skipped": True, "reason": "volume_not_found"}
+        else:
+            report = await _run_preflight_for_volume(
+                db,
+                book_id=book_id,
+                volume_id=str(volume_hit.get("volume_id") or ""),
+                volume_no=int(volume_hit.get("volume_no") or 1),
+            )
+            preflight_result = {"ok": True, "skipped": False, "report": report}
+
+    rewrite_cfg = (body or {}).get("rewrite") if isinstance((body or {}).get("rewrite"), dict) else {}
+    rewrite_enabled = bool(rewrite_cfg.get("enabled", False))
+    rewrite_result: dict[str, Any] = {"ok": True, "skipped": True, "reason": "disabled"}
+    if rewrite_enabled and not dry_run:
+        rewrite_level = str(rewrite_cfg.get("level") or "L1").strip().upper()
+        source_draft_id = str(rewrite_cfg.get("source_draft_id") or selected_draft_id or "").strip()
+        if not source_draft_id:
+            row_active = await db.execute(
+                text("SELECT active_draft_id::text AS active_draft_id FROM chapter WHERE chapter_id=CAST(:chapter_id AS uuid) LIMIT 1"),
+                {"chapter_id": chapter_id},
+            )
+            source_draft_id = str((row_active.mappings().first() or {}).get("active_draft_id") or "")
+        rewrite_run = await rewrite_run_route(
+            {
+                "book_id": book_id,
+                "chapter_id": chapter_id,
+                "source_draft_id": source_draft_id,
+                "level": rewrite_level,
+            },
+            db,
+        )
+        rewrite_accept = None
+        if bool(rewrite_cfg.get("auto_accept", False)) and bool(rewrite_run.get("ok")) and source_draft_id:
+            rewrite_accept = await rewrite_accept_route(
+                {
+                    "source_draft_id": source_draft_id,
+                    "rewritten_text": str(rewrite_run.get("rewritten_text") or ""),
+                    "level": rewrite_level,
+                    "rewrite_report": rewrite_run.get("rewrite_report") if isinstance(rewrite_run.get("rewrite_report"), dict) else {},
+                    "diff": rewrite_run.get("diff") if isinstance(rewrite_run.get("diff"), dict) else {},
+                },
+                db,
+            )
+        rewrite_result = {"ok": bool(rewrite_run.get("ok")), "skipped": False, "run": rewrite_run, "accept": rewrite_accept}
+    elif rewrite_enabled and dry_run:
+        rewrite_result = {"ok": True, "skipped": True, "reason": "dry_run"}
+
+    style_evolution_result: dict[str, Any] = {"ok": True, "skipped": True, "reason": "disabled"}
+    if evolve_style and not dry_run:
+        try:
+            style_evolution_result = await evolve_book_style(
+                db,
+                book_id=book_id,
+                profile_id=(str(style_evolution_cfg.get("profile_id") or "").strip() or None),
+                sample_limit=int(style_evolution_cfg.get("sample_limit") or 24),
+                min_sample_count=int(style_evolution_cfg.get("min_sample_count") or 6),
+                alpha=float(style_evolution_cfg.get("alpha") or 0.58),
+                force=bool(style_evolution_cfg.get("force", False)),
+                sync_book_settings=bool(style_evolution_cfg.get("sync_book_settings", True)),
+                note=str(style_evolution_cfg.get("note") or "").strip() or None,
+            )
+        except RuntimeError as exc:
+            style_evolution_result = {
+                "ok": False,
+                "skipped": False,
+                "reason": str(exc),
+            }
+        except Exception as exc:
+            style_evolution_result = {
+                "ok": False,
+                "skipped": False,
+                "reason": f"STYLE_EVOLUTION_EXCEPTION:{str(exc)}",
+            }
+    elif evolve_style and dry_run:
+        style_evolution_result = {"ok": True, "skipped": True, "reason": "dry_run"}
+
+    preflight_overall = (
+        str((((preflight_result.get("report") if isinstance(preflight_result.get("report"), dict) else {}).get("summary") or {}).get("overall") or "")).upper()
+        if isinstance(preflight_result, dict)
+        else ""
+    )
+    ok = bool(draft_result.get("ok"))
+    ok = ok and bool(writeback_result.get("ok", True))
+    ok = ok and bool(rewrite_result.get("ok", True))
+    if fail_on_preflight_fail and preflight_overall == "FAIL":
+        ok = False
+
+    return {
+        "ok": ok,
+        "book_id": book_id,
+        "chapter_id": chapter_id,
+        "chapter_no": chapter_no_final,
+        "workflow_run_id": run_id or None,
+        "stages": {
+            "draft": draft_result,
+            "length_guard": length_guard_result,
+            "writeback": writeback_result,
+            "preflight": preflight_result,
+            "rewrite": rewrite_result,
+            "style_evolution": style_evolution_result,
+        },
+        "summary": {
+            "preflight_overall": preflight_overall or "UNKNOWN",
+            "fail_on_preflight_fail": fail_on_preflight_fail,
+            "style_evolution_updated": bool(style_evolution_result.get("updated")),
+            "style_evolution_skipped": bool(style_evolution_result.get("skipped")),
+            "min_chars_target": min_chars,
+            "chapter_chars": int(length_guard_result.get("after_chars") or 0),
+        },
     }
 
 
@@ -16663,6 +22281,12 @@ async def eval_tension_route(
         "targets": merge_defaults(DEFAULT_TENSION_TARGETS, targets_input),
         "schema_ver": body.schema_ver,
     }
+    _attach_trigger_meta(
+        payload,
+        trigger_source=body.trigger_source,
+        trigger_entry=body.trigger_entry,
+        trigger_mode=body.trigger_mode,
+    )
     profile_id = str(body.profile_id) if body.profile_id else None
     if not profile_id:
         r = await db.execute(text("SELECT profile_id FROM book WHERE book_id=:book_id"), {"book_id": str(book_id)})
@@ -16726,9 +22350,16 @@ async def tension_control_plan_route(
         "outline_id": str(body.outline_id) if body.outline_id else None,
         "targets": merge_defaults(DEFAULT_TENSION_TARGETS, body_targets),
         "style": merge_defaults(DEFAULT_TENSION_STYLE, style_input),
+        "material_refs": [str(x) for x in (body.material_refs or []) if str(x).strip()][:20],
         "llm_model": body.llm_model or DEFAULT_LLM_MODEL,
         "schema_ver": body.schema_ver,
     }
+    _attach_trigger_meta(
+        payload,
+        trigger_source=body.trigger_source,
+        trigger_entry=body.trigger_entry,
+        trigger_mode=body.trigger_mode,
+    )
     profile_id = str(body.profile_id) if body.profile_id else None
     if not profile_id:
         r = await db.execute(text("SELECT profile_id FROM book WHERE book_id=:book_id"), {"book_id": str(book_id)})
@@ -17278,3 +22909,160 @@ async def skillpacks_auto_run_route(body: dict, db: AsyncSession = Depends(get_d
         "manual_fixes": pending_manual_fixes,
         "execution": exec_out,
     }
+
+
+@app.get("/v1/books/{book_id}/engine/dashboard")
+async def story_engine_dashboard_route(book_id: UUID, db: AsyncSession = Depends(get_db)) -> dict:
+    try:
+        return await get_story_engine_dashboard(db, str(book_id))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"STORY_ENGINE_DASHBOARD_FAILED:{exc}") from exc
+
+
+@app.get("/v1/books/{book_id}/engine/quality/metrics")
+async def story_engine_quality_metrics_route(
+    book_id: UUID,
+    checkpoint_limit: int = Query(default=240, ge=40, le=1000),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    try:
+        return await get_story_engine_quality_metrics(
+            db,
+            str(book_id),
+            checkpoint_limit=checkpoint_limit,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"STORY_ENGINE_QUALITY_METRICS_FAILED:{exc}") from exc
+
+
+@app.post("/v1/books/{book_id}/engine/quality/regression")
+async def story_engine_quality_regression_route(book_id: UUID, body: dict, db: AsyncSession = Depends(get_db)) -> dict:
+    try:
+        return await run_story_engine_regression(db, str(book_id), body if isinstance(body, dict) else {})
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"STORY_ENGINE_QUALITY_REGRESSION_FAILED:{exc}") from exc
+
+
+@app.get("/v1/books/{book_id}/story_bible")
+async def story_bible_snapshot_route(
+    book_id: UUID,
+    chapter_id: UUID | None = Query(default=None),
+    limit: int = Query(default=80, ge=10, le=400),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    try:
+        return await get_story_bible_snapshot(
+            db,
+            str(book_id),
+            chapter_id=(str(chapter_id) if chapter_id else None),
+            limit=limit,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"STORY_BIBLE_SNAPSHOT_FAILED:{exc}") from exc
+
+
+@app.get("/v1/books/{book_id}/story_bible/proposals")
+async def story_bible_proposals_list_route(
+    book_id: UUID,
+    status: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    try:
+        return await list_story_bible_proposals(db, str(book_id), status=status, limit=limit)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"STORY_BIBLE_PROPOSAL_LIST_FAILED:{exc}") from exc
+
+
+@app.post("/v1/books/{book_id}/story_bible/proposals")
+async def story_bible_proposals_create_route(book_id: UUID, body: dict, db: AsyncSession = Depends(get_db)) -> dict:
+    try:
+        return await create_story_bible_proposal(db, str(book_id), body if isinstance(body, dict) else {})
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"STORY_BIBLE_PROPOSAL_CREATE_FAILED:{exc}") from exc
+
+
+@app.post("/v1/books/{book_id}/story_bible/proposals/{proposal_id}/review")
+async def story_bible_proposals_review_route(
+    book_id: UUID,
+    proposal_id: UUID,
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    try:
+        return await review_story_bible_proposal(
+            db,
+            str(book_id),
+            str(proposal_id),
+            body if isinstance(body, dict) else {},
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"STORY_BIBLE_PROPOSAL_REVIEW_FAILED:{exc}") from exc
+
+
+@app.get("/v1/books/{book_id}/engine/memory/session")
+async def writing_memory_session_get_route(
+    book_id: UUID,
+    session_key: str = Query(default="default"),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    try:
+        return await get_writing_session_state(db, str(book_id), session_key=session_key)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"WRITING_MEMORY_SESSION_GET_FAILED:{exc}") from exc
+
+
+@app.post("/v1/books/{book_id}/engine/memory/session")
+async def writing_memory_session_upsert_route(book_id: UUID, body: dict, db: AsyncSession = Depends(get_db)) -> dict:
+    try:
+        return await upsert_writing_session_state(db, str(book_id), body if isinstance(body, dict) else {})
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"WRITING_MEMORY_SESSION_UPSERT_FAILED:{exc}") from exc
+
+
+@app.post("/v1/books/{book_id}/engine/memory/pack")
+async def writing_memory_pack_route(book_id: UUID, body: dict, db: AsyncSession = Depends(get_db)) -> dict:
+    try:
+        return await build_writing_memory_pack(db, str(book_id), body if isinstance(body, dict) else {})
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"WRITING_MEMORY_PACK_FAILED:{exc}") from exc
+
+
+@app.post("/v1/books/{book_id}/engine/memory/writeback")
+async def writing_memory_writeback_route(book_id: UUID, body: dict, db: AsyncSession = Depends(get_db)) -> dict:
+    try:
+        return await validate_and_writeback_memory(db, str(book_id), body if isinstance(body, dict) else {})
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"WRITING_MEMORY_WRITEBACK_FAILED:{exc}") from exc
+
+
+@app.post("/v1/books/{book_id}/engine/chapter_pack")
+async def chapter_engine_pack_route(book_id: UUID, body: dict, db: AsyncSession = Depends(get_db)) -> dict:
+    try:
+        return await build_chapter_engine_pack(db, str(book_id), body if isinstance(body, dict) else {})
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"CHAPTER_ENGINE_PACK_FAILED:{exc}") from exc
+
+
+@app.post("/v1/books/{book_id}/engine/chapter_audit")
+async def chapter_engine_audit_route(book_id: UUID, body: dict, db: AsyncSession = Depends(get_db)) -> dict:
+    try:
+        return await run_chapter_engine_audit(db, str(book_id), body if isinstance(body, dict) else {})
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"CHAPTER_ENGINE_AUDIT_FAILED:{exc}") from exc
+
+
+@app.post("/v1/books/{book_id}/engine/chapter_repair_plan")
+async def chapter_engine_repair_plan_route(book_id: UUID, body: dict, db: AsyncSession = Depends(get_db)) -> dict:
+    try:
+        return await build_chapter_repair_plan(db, str(book_id), body if isinstance(body, dict) else {})
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"CHAPTER_ENGINE_REPAIR_PLAN_FAILED:{exc}") from exc
+
+
+@app.post("/v1/books/{book_id}/engine/model_route")
+async def story_engine_model_route(book_id: UUID, body: dict, db: AsyncSession = Depends(get_db)) -> dict:
+    try:
+        return await route_story_model(db, str(book_id), body if isinstance(body, dict) else {})
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"STORY_ENGINE_MODEL_ROUTE_FAILED:{exc}") from exc

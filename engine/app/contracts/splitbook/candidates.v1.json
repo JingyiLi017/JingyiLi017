@@ -1,0 +1,47 @@
+﻿{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schema/candidates.v1.json",
+  "title": "CandidatesV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["candidates"],
+  "properties": {
+    "candidates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "content", "evidence", "entity_tags"],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "potion_recipe",
+              "sequence",
+              "ritual",
+              "rule",
+              "warning",
+              "pollution",
+              "artifact",
+              "organization",
+              "ability",
+              "event",
+              "foreshadow_seed",
+              "payoff_hint",
+              "other"
+            ]
+          },
+          "content": { "type": "string" },
+          "evidence": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "entity_tags": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        }
+      }
+    }
+  }
+}

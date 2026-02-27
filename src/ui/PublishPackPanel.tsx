@@ -24,7 +24,7 @@ export function PublishPackPanel({ bookId, volumeId, onPickVolumeId, onStatus }:
         pack_name: packName,
       });
       setResult(out || {});
-      onStatus?.("Publish pack generated");
+      onStatus?.("发布包已生成");
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -42,32 +42,32 @@ export function PublishPackPanel({ bookId, volumeId, onPickVolumeId, onStatus }:
 
   return (
     <section className="wb-panel" style={{ minHeight: "auto", marginBottom: 10 }}>
-      <h3>Publish Pack</h3>
+      <h3>发布包</h3>
       <div className="row" style={{ gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
         <label>
-          volume_id
-          <input value={volumeId} onChange={(e) => onPickVolumeId(e.target.value)} placeholder="uuid" />
+          卷 ID
+          <input value={volumeId} onChange={(e) => onPickVolumeId(e.target.value)} placeholder="UUID（可选）" />
         </label>
         <label>
-          pack_name
+          包名
           <input value={packName} onChange={(e) => setPackName(e.target.value)} />
         </label>
         <button onClick={() => void runPublishPack()} disabled={!bookId || !volumeId || busy}>
-          {busy ? "Building..." : "Build Publish Pack"}
+          {busy ? "构建中..." : "构建发布包"}
         </button>
         <button onClick={() => void openFolder()} disabled={!String(result?.output_dir || "").trim()}>
-          Open Folder
+          打开目录
         </button>
       </div>
       {err ? <div className="hint" style={{ color: "#7f1d1d", marginTop: 8 }}>{err}</div> : null}
       {result ? (
         <div className="job-grid" style={{ marginTop: 8 }}>
           <div>
-            <div className="small">output_dir</div>
+            <div className="small">输出目录</div>
             <pre>{String(result?.output_dir || "")}</pre>
           </div>
           <div>
-            <div className="small">files ({files.length})</div>
+            <div className="small">文件列表 ({files.length})</div>
             <div className="scroll" style={{ maxHeight: 160 }}>
               {files.map((f: any, idx: number) => (
                 <div key={`pf_${idx}`} className="issue-item">
@@ -77,7 +77,7 @@ export function PublishPackPanel({ bookId, volumeId, onPickVolumeId, onStatus }:
                   </div>
                 </div>
               ))}
-              {files.length === 0 ? <div className="hint">No file list in response.</div> : null}
+              {files.length === 0 ? <div className="hint">返回结果中没有文件列表。</div> : null}
             </div>
           </div>
         </div>
@@ -85,4 +85,3 @@ export function PublishPackPanel({ bookId, volumeId, onPickVolumeId, onStatus }:
     </section>
   );
 }
-

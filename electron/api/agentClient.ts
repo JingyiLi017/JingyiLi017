@@ -35,6 +35,40 @@ async function fetchJson(path: string, body?: any) {
   }
 }
 
+async function deleteJson(path: string) {
+  const cfg = await getSettings();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), Math.max(3000, Number(cfg.timeoutMs || 20000)));
+  try {
+    const base = String(cfg.baseUrl || "").replace(/\/+$/, "");
+    const url = `${base}${path}`;
+    const res = await fetch(url, {
+      method: "DELETE",
+      headers: {
+        "Content-Type": "application/json",
+        ...(cfg.agentToken ? { Authorization: `Bearer ${cfg.agentToken}` } : {}),
+      },
+      signal: controller.signal,
+    });
+    const text = await res.text();
+    let data: any = null;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      data = { raw: text };
+    }
+    if (!res.ok) {
+      const err = new Error(`HTTP_${res.status}`);
+      (err as any).status = res.status;
+      (err as any).payload = data;
+      throw err;
+    }
+    return data;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function fetchRaw(req: { path: string; method?: string; body?: any; headers?: Record<string, string> }) {
   const cfg = await getSettings();
   const controller = new AbortController();
@@ -99,6 +133,9 @@ export const agentClient = {
   },
   propose: (req: any) => fetchJson("/v1/agent/propose", req),
   apply: (req: any) => fetchJson("/v1/agent/apply", req),
+  orchestratePlan: (req: any) => fetchJson("/v1/agent/orchestrate/plan", req),
+  orchestrateStep: (req: any) => fetchJson("/v1/agent/orchestrate/step", req),
+  orchestrateRun: (req: any) => fetchJson("/v1/agent/orchestrate/run", req),
   rollback: (req: any) => fetchJsonOrDefault("/v1/agent/rollback", req, { ok: false, unsupported: true }),
   auditsList: (req: any) => fetchJsonOrDefault("/v1/agent/audits/list", req, { audits: [], unsupported: true }),
   comboInjectionsList: (req: any) => fetchJson("/v1/agent/combo_injections/list", req),
@@ -114,6 +151,7 @@ export const agentClient = {
   rewriteAccept: (req: any) => fetchJson("/v1/rewrite/accept", req),
   draftRun: (req: any) => fetchJson("/v1/draft/run", req),
   draftGet: (draftId: string) => fetchJson(`/v1/drafts/${encodeURIComponent(String(draftId || ""))}`),
+  draftDelete: (draftId: string) => deleteJson(`/v1/drafts/${encodeURIComponent(String(draftId || ""))}`),
   chapterDrafts: (chapterId: string) => fetchJson(`/v1/chapters/${encodeURIComponent(String(chapterId || ""))}/drafts`),
   chapterActivateDraft: (chapterId: string, draftId: string) =>
     fetchJson(`/v1/chapters/${encodeURIComponent(String(chapterId || ""))}/drafts/${encodeURIComponent(String(draftId || ""))}/activate`, {}),
